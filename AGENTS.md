@@ -48,6 +48,15 @@ throwaway homes; see Testing below).
 5. **Report outcomes faithfully.** After a real write, tell the user: the target location, the native id, and
    any caveats below that apply.
 
+## dsh -> dsh preset porting
+
+`harness-bridge migrate <q> --from dsh --to dsh --preset <name>` copies a conversation to another
+agent preset with full event fidelity (raw transcript copy; header `agentPreset` rewritten; the
+projcache clone gets the preset row patched). The preset must exist as a directory preset under
+`~/.dsh/.agent-presets/<name>` — if it is missing, tell the user to install it (and run the
+preset's `sync.mjs` for desktop visibility) rather than picking a different preset silently.
+The port is idempotent: same source + preset -> same new session id.
+
 ## Provider caveats (tell the user when relevant)
 
 - **Codex Desktop sidebar**: the desktop app's thread registry (`state_5.sqlite` `threads` table) is filled by a

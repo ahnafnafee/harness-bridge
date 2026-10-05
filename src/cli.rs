@@ -185,7 +185,7 @@ pub fn run() -> anyhow::Result<()> {
                     .as_any()
                     .downcast_ref::<providers::dsh::DshProvider>()
                     .ok_or_else(|| anyhow::anyhow!("internal: dsh provider downcast failed"))?;
-                println!("porting dsh session {} to preset {:?} ...", r.id, preset);
+                println!("porting dsh session {} to preset {} ...", r.id, preset.as_deref().unwrap_or("?"));
                 let opts = ir::WriteOpts { cwd, name, dry_run };
                 let outcome = dsh.port_preset(&r, preset.as_deref().unwrap(), &opts)?;
                 println!("{}", serde_json::to_string_pretty(&outcome)?);

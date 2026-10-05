@@ -86,7 +86,7 @@ Each provider implements three operations: **discover** (list sessions + titles)
 | **Codex Desktop / CLI** | ✅ | ✅ | Desktop-shaped rollouts + sidebar registration + import ledger. Validated against the real app-server. |
 | **Claude Code** | ✅ | ✅ | `~/.claude/projects/<slug>/<uuid>.jsonl`; thinking blocks, tool_use/tool_result preserved. |
 | **ZCode** | ✅ | ✅ | SQLite `session`/`message`/`part` tables; writes are WAL-safe. |
-| **agy** (Antigravity CLI) | ⚠️ | ❌ | Reads the CLI's own `brain/*/logs/transcript.jsonl`; falls back to heuristic protobuf decoding of `conversations/<id>.db` (lossy). Write is not supported (protobuf is CLI-managed). |
+| **agy** (Antigravity CLI) | ⚠️ | ❌ | Prefers the CLI's own `brain/*/logs/transcript.jsonl`; falls back to the community-documented protobuf step map (`steps.step_payload` in `conversations/<id>.db`: 14=user, 15=assistant, 5/7/8/9/17/21/38/132=tool calls, 98=history injection). Write is not supported (protobuf is CLI-managed); a headless replay path via `agy -p` is possible but unimplemented. |
 
 ### Fidelity notes
 
@@ -124,10 +124,24 @@ Yes. Nothing is moved — sessions are converted and copied. Both sides keep wor
 `migrate` refuses to guess and lists the matching ids. Use an id prefix: `harness-bridge migrate 456f0420`.
 </details>
 
+## 🔎 Related tools
+
+Kindred projects the survey turned up — each solves a different slice of the problem:
+
+- **[Antigravity Format Reverse-Engineered](https://gist.github.com/ArcticWinterSturm/718637afb3094814a94dc77261e0b5e0)** — the community step-type map for agy's protobuf conversation DBs; the basis of our agy fallback reader.
+- **[Antigravity-Legacy-Migrator](https://github.com/Tauqueer12/Antigravity-Legacy-Migrator)** — migrates legacy Antigravity IDE `.pb` histories into the new SQLite format (IDE-internal, not cross-harness).
+- **[agentgrep](https://agentgrep.org/backends/antigravity-cli/)** — searchable index over agent sessions incl. Antigravity CLI artifacts.
+- **[antigravity_decryptor](https://deepwiki.com/arashz/antigravity_decryptor/8.2-protobuf-wire-format-parsing)** — schema-less protobuf wire parsing for Antigravity data.
+- **Codex `/import`** — Codex CLI's built-in importer for Claude Code / Cursor chats (config + recent chats; not a general harness-to-harness transcript converter).
+- **authsec.ai session transfer** — moves session *context summaries* between Claude Code, Codex and Gemini.
+- **Contextify** — indexes Claude Code + Codex sessions into one searchable local database (recall, not migration).
+
+harness-bridge differs by doing **native, resumable writes** on both ends of the pipe — not exports to markdown, not summaries, not single-harness format upgrades.
+
 ## 🗺️ Roadmap
 
 - [ ] macOS/Linux home paths (currently Windows-first)
-- [ ] agy write support (needs upstream proto schemas)
+- [ ] agy write support (native protobuf is CLI-managed; a headless `agy -p` replay mode is the pragmatic path)
 - [ ] `verify` subcommand wrapping the Codex app-server round-trip
 - [ ] Attachment/media carrying across providers
 

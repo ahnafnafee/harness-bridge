@@ -99,42 +99,95 @@ fn str_field(buf: &[u8], field: u64) -> Option<String> {
         .find_map(|v| String::from_utf8(v).ok())
 }
 
-/// Decode a `steps.step_payload` blob into IR events (heuristic, lossy).
+/// Decode a `steps.step_payload` blob into IR events.
+///
+/// Step-type map reverse-engineered by the community (ArcticWinterSturm's gist,
+/// cross-checked against the embedded Go protobuf descriptors):
+/// 14=user prompt (text at field 19/2), 15=assistant/planner response (text at
+/// 20/3), 5/7/8/9/17/21/38/132=tool calls with `{1: call_id, 2: name, 3: args JSON}`
+/// under field 5/4, run_command output under 28/21/1, 98=history injection,
+/// 23=task/plan, 101/28=status plumbing.
 fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKind> {
     let mut out = Vec::new();
+
+    fn tool_records(payload: &[u8]) -> Vec<EventKind> {
+        let mut out = Vec::new();
+        for five in sub(payload, 5) {
+            for four in sub(&five, 4) {
+                let call_id = str_field(&four, 1).unwrap_or_default();
+                let name = str_field(&four, 2);
+                let args_json = str_field(&four, 3).unwrap_or_default();
+                match name {
+                    Some(name) if !call_id.is_empty() => out.push(EventKind::ToolCall {
+                        call_id,
+                        name,
+                        arguments: args_json,
+                    }),
+                    _ => {
+                        if !args_json.is_empty() {
+                            out.push(EventKind::ToolResult { call_id, text: args_json });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     match step_type {
         14 => {
-            // user prompt: text lives under field 19 (string), fallback 19/3/1
             let text = str_field(payload, 19)
-                .or_else(|| sub(payload, 19).into_iter().find_map(|n| str_field(&n, 1)))
+                .or_else(|| sub(payload, 19).into_iter().find_map(|n| str_field(&n, 2)))
                 .unwrap_or_default();
             if !text.trim().is_empty() {
                 out.push(EventKind::Message { role: Role::User, text, source_kind: None });
             }
         }
-        132 => {
-            // tool record: field 5/4 = {1: call_id, 2: name (calls only), 3: JSON payload}
-            for five in sub(payload, 5) {
-                for four in sub(&five, 4) {
-                    let call_id = str_field(&four, 1).unwrap_or_default();
-                    let name = str_field(&four, 2);
-                    let payload_json = str_field(&four, 3).unwrap_or_default();
-                    match name {
-                        Some(name) if !call_id.is_empty() => out.push(EventKind::ToolCall {
-                            call_id,
-                            name,
-                            arguments: payload_json,
-                        }),
-                        _ => {
-                            if !payload_json.is_empty() {
-                                out.push(EventKind::ToolResult { call_id, text: payload_json });
+        15 => {
+            // assistant/planner response: text at field 20/3; may also carry tool records
+            let text = sub(payload, 20)
+                .first()
+                .and_then(|n| str_field(n, 3))
+                .unwrap_or_default();
+            if !text.trim().is_empty() {
+                out.push(EventKind::Message { role: Role::Assistant, text, source_kind: None });
+            }
+            out.extend(tool_records(payload));
+        }
+        5 | 7 | 8 | 9 | 17 | 21 | 38 | 132 => {
+            let calls = tool_records(payload);
+            if calls.is_empty() {
+                // some builds put the whole tool record directly at field 4/3
+                let call_id = str_field(payload, 1).unwrap_or_default();
+                let name = str_field(payload, 2);
+                let args_json = str_field(payload, 3).unwrap_or_default();
+                if let (Some(name), false) = (name, call_id.is_empty()) {
+                    out.push(EventKind::ToolCall { call_id, name, arguments: args_json });
+                }
+            } else {
+                out.extend(calls);
+            }
+            // run_command results land under field 28/21/1
+            if step_type == 21 {
+                for twenty_eight in sub(payload, 28) {
+                    for twenty_one in sub(&twenty_eight, 21) {
+                        if let Some(text) = str_field(&twenty_one, 1) {
+                            if !text.trim().is_empty() {
+                                out.push(EventKind::ToolResult { call_id: String::new(), text });
                             }
                         }
                     }
                 }
             }
         }
-        _ => {}
+        98 => {
+            if let Some(text) = sub(payload, 111).first().and_then(|n| str_field(n, 1)) {
+                if !text.trim().is_empty() {
+                    out.push(EventKind::Compaction { id: None, text: Some(text) });
+                }
+            }
+        }
+        _ => {} // 23 task/plan, 101 stop hook, 28 command status, ... plumbing
     }
     out
 }

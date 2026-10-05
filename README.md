@@ -87,7 +87,7 @@ Each provider implements three operations: **discover** (list sessions + titles)
 | **Codex Desktop / CLI** | ✅ | ✅ | Desktop-shaped rollouts + sidebar registration + import ledger. Validated against the real app-server. |
 | **Claude Code** | ✅ | ✅ | `~/.claude/projects/<slug>/<uuid>.jsonl`; thinking blocks, tool_use/tool_result preserved. |
 | **ZCode** | ✅ | ✅ | SQLite `session`/`message`/`part` tables; writes are WAL-safe. |
-| **agy** (Antigravity CLI) | ⚠️ | ❌ | Prefers the CLI's own `brain/*/logs/transcript.jsonl`; falls back to the community-documented protobuf step map (`steps.step_payload` in `conversations/<id>.db`: 14=user, 15=assistant, 5/7/8/9/17/21/38/132=tool calls, 98=history injection). Write is not supported (protobuf is CLI-managed); a headless replay path via `agy -p` is possible but unimplemented. |
+| **agy** (Antigravity CLI) | ✅ | ✅ | Read: brain transcripts, falling back to the community-documented protobuf step map. Write: **native** — rebuilds the conversation's `steps` table at the protobuf wire level (template-clone), registers the summaries index, brain transcripts and title. Text turns today; tool-call steps are a tracked follow-up. |
 
 ### Fidelity notes
 
@@ -142,7 +142,7 @@ harness-bridge differs by doing **native, resumable writes** on both ends of the
 ## 🗺️ Roadmap
 
 - [ ] macOS/Linux home paths (currently Windows-first)
-- [ ] agy write support (native protobuf is CLI-managed; a headless `agy -p` replay mode is the pragmatic path)
+- [ ] agy write: tool-call steps (text turns ship natively since v0.2.0)
 - [ ] `verify` subcommand wrapping the Codex app-server round-trip
 - [ ] Attachment/media carrying across providers
 

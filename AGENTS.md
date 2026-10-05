@@ -59,8 +59,9 @@ throwaway homes; see Testing below).
   reasoning, tool calls/results and compaction summaries are kept.
 - **ZCode writes** go into the live `db.sqlite` (WAL). For zero-risk operations, copy the db and pass
   `--zcode-db` to the copy.
-- **agy is read-only** (experimental): transcripts come from `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/`
-  with a heuristic protobuf fallback; older conversations may convert partially. Writing to agy is unsupported.
+- **agy writes are text-turn native**: harness-bridge rebuilds the conversation db (steps table, summaries index,
+  brain transcripts) from a template conversation. Tool calls/results are not yet representable in agy's protobuf
+  steps and are omitted. Content that trips Google's safety filters may still be blocked when agy generates responses.
 - **Timestamps, tool call/result pairing, reasoning and compaction summaries are preserved** across all
   read/write paths; per-provider renderings differ (e.g. reasoning becomes Codex `reasoning` items,
   Claude `thinking` blocks).

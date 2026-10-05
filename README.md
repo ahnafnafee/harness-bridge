@@ -1,163 +1,210 @@
 <div align="center">
 
-# 🌉 harness-bridge
+<h1>harness-bridge</h1>
 
-**Move your coding-agent sessions between harnesses — without losing a single tool call.**
+<p>Convert coding sessions into another harness's native format, ready to continue.</p>
 
-DeepSeek Harness · Codex Desktop · Claude Code · ZCode · agy
+<p><strong>DeepSeek Harness · Codex Desktop / CLI · Claude Code · ZCode · agy</strong></p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)](#)
-[![Release](https://img.shields.io/github/v/release/ahnafnafee/harness-bridge)](https://github.com/ahnafnafee/harness-bridge/releases/latest)
-[![CI](https://github.com/ahnafnafee/harness-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ahnafnafee/harness-bridge/actions/workflows/ci.yml)
+[![Release][release-badge]][releases]
+[![License][license-badge]](LICENSE)
+[![Rust][rust-badge]](https://www.rust-lang.org/)
+
+<p>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#compatibility">Compatibility</a> ·
+  <a href="docs/development.md">Development</a> ·
+  <a href="https://github.com/ahnafnafee/harness-bridge/issues">Report an issue</a>
+</p>
 
 </div>
 
 ---
 
-Your conversations with coding agents are locked inside each tool's private store — zstd-compressed event logs, opaque SQLite databases, protobuf blobs. `harness-bridge` opens them all, converts them through one normalized session model, and writes them back in whatever harness you want to continue in.
+`harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently.
 
-Built out of a real migration: a 1,580-event session moved from DeepSeek Harness into Codex Desktop, byte-for-byte faithful, resumable mid-conversation.
+For DSH → Codex migrations, the visible transcript and the context sent to the model are preserved separately. DSH's compaction summaries and pruned outputs become a native Codex resume checkpoint, keeping superseded history out of the next request.
 
-## ✨ Features
+<details>
+<summary><kbd>Table of contents</kbd></summary>
 
-- 🔀 **Five harnesses, one command** — read a session from any supported tool and land it in any other.
-- 🧬 **Lossless where it matters** — every user prompt, assistant reply, reasoning trace, tool call, and tool result is carried through the normalized model, with original timestamps.
-- 🖥️ **Threads appear in the target app** — writing to Codex Desktop registers the thread in `session_index.jsonl` *and* the desktop app's `state_5.sqlite` registry (its one-shot backfill otherwise ignores new files forever).
-- 🔁 **Idempotent** — a migration ledger (`~/.codex/dsh-imports.json`, shared with the original Python migration) remembers what's been moved; re-running updates in place instead of duplicating.
-- 🧪 **`--dry-run`** — full conversion against a throwaway home, nothing written.
-- ⚡ **Fast** — Rust, pure-Rust zstd (multi-frame), no external dependencies at runtime.
-- 🩹 **Handles real-world mess** — multi-frame zstd transcripts, duplicate tool results, spliced inbox messages, compaction summaries, seeded subagent history.
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Compatibility](#compatibility)
+- [Options](#options)
+- [How conversion works](#how-conversion-works)
+- [Resuming in Codex](#resuming-in-codex)
+- [Common questions](#common-questions)
+- [Development](#development)
+- [License](#license)
 
-## 📦 Install
+</details>
 
-```bash
-git clone https://github.com/ahnafnafee/harness-bridge
+## Install
+
+Download a binary from [Releases][releases], or build from source with a current stable Rust toolchain:
+
+```sh
+git clone https://github.com/ahnafnafee/harness-bridge.git
 cd harness-bridge
-cargo install --path .
+cargo install --locked --path .
 ```
 
-Requires Rust 1.75+. Everything is static — no Python, no Node, no runtime deps.
+Release archives target Windows x64, Linux x64, and macOS Apple Silicon. Local validation is Windows-first. The installed command does not require Python or Node; Python is used only by the optional development probe.
 
-## 🚀 Quick start
+## Quick start
 
-```bash
-# See everything that's migratable
-harness-bridge list
+List sessions, select an id prefix or title, and preview the conversion:
 
-# Move a session by title or id prefix (dsh -> Codex Desktop by default)
-harness-bridge migrate warlock-crack
-
-# Pick a different base directory for the new thread
-harness-bridge migrate warlock-crack --cwd "F:\\Miscellaneous\\GitHub\\gve-site"
-
-# Any direction works
-harness-bridge migrate 01a1058c --from codex --to dsh
-harness-bridge migrate 456f0420 --from dsh --to claude
-harness-bridge migrate "Image Analysis" --from agy --to codex
-
-# Rehearse without touching anything
-harness-bridge migrate warlock-crack --dry-run
+```sh
+harness-bridge list --provider dsh
+harness-bridge migrate "<id-prefix>" --from dsh --to codex --dry-run
 ```
 
-## 🧭 How it works
+Then write the native session:
+
+```sh
+harness-bridge migrate "<id-prefix>" --from dsh --to codex
+```
+
+The result reports the destination path, native session id, and conversion counts. DSH and Codex are the default source and target, so `harness-bridge migrate "<id-prefix>"` is equivalent.
+
+Set the new chat's directory and title when needed. For example, in PowerShell:
+
+```powershell
+harness-bridge migrate "API migration" --cwd "F:\Projects\my-app" --name "API migration"
+```
+
+Other supported directions use the same command:
+
+```sh
+harness-bridge migrate "<id-prefix>" --from codex --to claude
+harness-bridge migrate "<id-prefix>" --from claude --to dsh
+harness-bridge migrate "<id-prefix>" --from zcode --to codex
+harness-bridge migrate "<id-prefix>" --from agy --to codex
+```
+
+If a query matches several sessions, the command lists their ids and stops. Use a longer id prefix to select the intended session.
+
+## Compatibility
+
+| Provider | Read | Write | Native format and constraints |
+| :-- | :--: | :--: | :-- |
+| **dsh** | Yes | Yes | Version 4 JSONL, including multi-frame zstd input. Converted sessions use plain JSONL. |
+| **Codex** | Yes | Yes | Rollout JSONL, desktop sidebar registration, and an import ledger. Writes require an existing top-level Desktop session as a template. |
+| **Claude Code** | Yes | Yes | Project JSONL with thinking, tool-use, and tool-result blocks. Harness instructions are omitted because there is no developer channel. |
+| **ZCode** | Yes | Yes | SQLite session, message, and part tables. Writes use the destination database. |
+| **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; tool calls and results are omitted. |
+
+Messages, reasoning, tool pairs, timestamps, and stored summaries pass through the shared session model where the target can represent them. Provider-specific telemetry and unsupported records are not guaranteed to survive a round trip. Attachment and media transfer is not implemented.
+
+## Options
+
+| Option | Purpose |
+| :-- | :-- |
+| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, or `agy`. |
+| `--cwd` | Set the destination's base directory; defaults to the source directory. Paths inside messages are left as recorded. |
+| `--name` | Override the destination's display title. |
+| `--dry-run` | Read and convert without writing. Required target templates are still read. |
+| `--preset` | Copy a DSH session to an installed directory preset; valid only with `--from dsh --to dsh`. |
+| `--dsh-home`, `--codex-home`, `--claude-home` | Override a provider's home directory, including for isolated validation. |
+| `--zcode-db`, `--agy-dir` | Override ZCode's database or agy's data directory. |
+
+Run `harness-bridge --help` or `harness-bridge migrate --help` for the full command reference.
+
+<details>
+<summary><strong>Default storage locations</strong></summary>
+
+Paths are relative to the user's home directory.
+
+| Provider | Location |
+| :-- | :-- |
+| dsh | `~/.dsh/sessions/<project>/<id>/session.v4.jsonl[.zstd]` |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
+| Claude Code | `~/.claude/projects/<project>/<id>.jsonl` |
+| ZCode | `~/.zcode/cli/db/db.sqlite` |
+| agy | `~/.gemini/antigravity-cli` |
+
+</details>
+
+## How conversion works
 
 ```mermaid
 flowchart LR
-    A[dsh\nsession.v4.jsonl.zstd] --> R[Reader]
-    B[Codex\nrollout.jsonl] --> R
-    C[Claude Code\nprojects/*.jsonl] --> R
-    D[ZCode\ndb.sqlite] --> R
-    E[agy\nbrain transcript / protobuf] --> R
-    R --> IR[[Normalized\nsession IR]]
-    IR --> W1[Writer] --> A2[dsh]
-    IR --> W2[Writer] --> B2[Codex]
-    IR --> W3[Writer] --> C2[Claude Code]
-    IR --> W4[Writer] --> D2[ZCode]
+    Source["Source session store"] --> Reader["Provider reader"]
+    Reader --> Session["Normalized session"]
+    Session --> Writer["Provider writer"]
+    Writer --> Target["Target session store"]
 ```
 
-Each provider implements three operations: **discover** (list sessions + titles), **read** (native → IR), **write** (IR → native). The IR preserves roles, tool call/result pairing, reasoning text, compaction summaries, source-kind tags, and original timestamps — so a session keeps its shape wherever it lands.
+Every provider implements discovery, reading, and writing. The shared [session model](src/ir.rs) carries the archive and, when available, a separate set of events representing the source's current model context. The destination writer translates those records into native messages and tool items, then performs any registration its app needs.
 
-## 🔄 Provider support
+Codex writes also update `session_index.jsonl`, the `threads` table in `state_5.sqlite` when present, and `dsh-imports.json`. This lets the Desktop app find imported chats without relying on its initial rollout backfill.
 
-| Harness | Read | Write | Notes |
-|---|---|---|---|
-| **dsh** (DeepSeek Harness) | ✅ | ✅ | Reads multi-frame `.jsonl.zstd`; writes plain JSONL (dsh reads both). Subagent/seeded sessions supported. |
-| **Codex Desktop / CLI** | ✅ | ✅ | Desktop-shaped rollouts + sidebar registration + import ledger. Validated against the real app-server. |
-| **Claude Code** | ✅ | ✅ | `~/.claude/projects/<slug>/<uuid>.jsonl`; thinking blocks, tool_use/tool_result preserved. |
-| **ZCode** | ✅ | ✅ | SQLite `session`/`message`/`part` tables; writes are WAL-safe. |
-| **agy** (Antigravity CLI) | ✅ | ✅ | Read: brain transcripts, falling back to the community-documented protobuf step map. Write: **native** — rebuilds the conversation's `steps` table at the protobuf wire level (template-clone), registers the summaries index, brain transcripts and title. Text turns today; tool-call steps are a tracked follow-up. |
+## Resuming in Codex
 
-### Fidelity notes
+DSH transcripts are append-only: a compacted summary or pruned tool output can replace earlier context while the original records remain in the file. Sending that entire log on resume can exceed the model's context window.
 
-- **dsh → Codex**: validated against a known-good reference migration — all 880 model-context records and all 9 turn contexts byte-identical; UI display records identical except tool calls whose source emitted duplicate results (harness-bridge shows the merged output text).
-- **Roles**: harness-injected context (time check-ins, skill catalogs, system prompts) becomes Codex `developer` messages — kept in the model's context, hidden from the chat transcript. Claude Code has no developer channel, so those notes are dropped there (documented, intentional).
-- **`--cwd` changes only the new session's base directory** — conversation content is never rewritten, so file paths in history keep pointing at the original directories.
+The DSH reader replays `surfaceOp` replacements in their actual context order and retains the tool calls paired with surviving results. The Codex writer keeps the full converted transcript for display and adds a native `compacted` record containing the retained context. Migration output reports `resume_context_items` and `resume_context_chars` when this metadata is available.
 
-## 🖥️ The Codex Desktop gotcha
+Older DSH transcripts without surface operations use the full-history fallback. The retained context must still fit the selected model; character counts are diagnostic figures, not token counts.
 
-Codex Desktop's sidebar reads a `threads` table in `~/.codex/state_5.sqlite`. That table is filled by a **one-time backfill that marks itself complete** — rollout files added later are never discovered, even after restarting the app. harness-bridge registers the thread there for you (plus `session_index.jsonl` for the name). If a thread you imported with another tool is missing from the sidebar, that's why.
+After importing or updating a chat, reopen or refresh Codex Desktop so it reloads the rollout and registry. For a chat already loaded in memory, restart the app before resuming.
 
-## ❓ FAQ
+## Common questions
 
 <details>
-<summary><b>Is this safe to run against my live installs?</b></summary>
+<summary><strong>Does migration modify the source?</strong></summary>
 
-Reads never modify the source. Writes are additive: new rollout files, new session rows, ledger updates — and a one-time backup of `session_index.jsonl`. Use `--dry-run` to rehearse. ZCode writes go into its live database (WAL, brief locks); copy `db.sqlite` first if you want zero risk.
+No. Conversion reads the source and writes to the destination. A DSH preset change also creates a separate session with a deterministic id.
+
 </details>
 
 <details>
-<summary><b>Why does my migrated Codex thread show up only after a restart… or not at all with other tools?</b></summary>
+<summary><strong>What happens if I run the same migration again?</strong></summary>
 
-See the gotcha above — the desktop app only lists threads registered in its state database. harness-bridge handles it; manual file drops don't.
+Target ids are deterministic, and the Codex import ledger remembers earlier imports. Repeating a migration updates the same target instead of creating another copy. It can overwrite conversation added in the destination since the previous import; preserve that copy before reimporting.
+
 </details>
 
 <details>
-<summary><b>Can I keep using the session in the original harness afterwards?</b></summary>
+<summary><strong>Can I test against an isolated store?</strong></summary>
 
-Yes. Nothing is moved — sessions are converted and copied. Both sides keep working independently.
+Yes. Use the home overrides and `--dry-run`. For a real isolated Codex write, copy an existing top-level Desktop rollout into the test home's `sessions` directory as a template. For ZCode, use a database copy with `--zcode-db`. See [local validation](docs/development.md#local-validation).
+
 </details>
 
 <details>
-<summary><b>Multiple sessions share a title?</b></summary>
+<summary><strong>Why is an imported Codex chat missing from the sidebar?</strong></summary>
 
-`migrate` refuses to guess and lists the matching ids. Use an id prefix: `harness-bridge migrate 456f0420`.
+Desktop needs both the rollout and its registry entry. This tool registers the chat during a normal write; manually copying a rollout may not be enough. Refresh or reopen the app after migration.
+
 </details>
 
-## 🔎 Related tools
+## Development
 
-Kindred projects the survey turned up — each solves a different slice of the problem:
+Run the local Rust checks:
 
-- **[Antigravity Format Reverse-Engineered](https://gist.github.com/ArcticWinterSturm/718637afb3094814a94dc77261e0b5e0)** — the community step-type map for agy's protobuf conversation DBs; the basis of our agy fallback reader.
-- **[Antigravity-Legacy-Migrator](https://github.com/Tauqueer12/Antigravity-Legacy-Migrator)** — migrates legacy Antigravity IDE `.pb` histories into the new SQLite format (IDE-internal, not cross-harness).
-- **[agentgrep](https://agentgrep.org/backends/antigravity-cli/)** — searchable index over agent sessions incl. Antigravity CLI artifacts.
-- **[antigravity_decryptor](https://deepwiki.com/arashz/antigravity_decryptor/8.2-protobuf-wire-format-parsing)** — schema-less protobuf wire parsing for Antigravity data.
-- **Codex `/import`** — Codex CLI's built-in importer for Claude Code / Cursor chats (config + recent chats; not a general harness-to-harness transcript converter).
-- **authsec.ai session transfer** — moves session *context summaries* between Claude Code, Codex and Gemini.
-- **Contextify** — indexes Claude Code + Codex sessions into one searchable local database (recall, not migration).
+```sh
+cargo fmt --all -- --check
+cargo test --locked
+```
 
-harness-bridge differs by doing **native, resumable writes** on both ends of the pipe — not exports to markdown, not summaries, not single-harness format upgrades.
+The [development guide](docs/development.md) covers module ownership, provider work, and the real Codex app-server resume probe. Contributor guidance for running migrations is in [AGENTS.md](AGENTS.md).
 
-## 🗺️ Roadmap
+Current gaps include agy tool steps, attachment transfer, broader platform validation, and a built-in `verify` command.
 
-- [ ] macOS/Linux home paths (currently Windows-first)
-- [ ] agy write: tool-call steps (text turns ship natively since v0.2.0)
-- [ ] `verify` subcommand wrapping the Codex app-server round-trip
-- [ ] Attachment/media carrying across providers
+## License
 
-## 🤝 Contributing
+[MIT](LICENSE).
 
-Provider implementations are self-contained under `src/providers/` — a new harness needs one file implementing `discover` / `read` / `write` against [`src/ir.rs`](src/ir.rs). PRs welcome.
+<div align="right">
 
-## 📄 License
-
-MIT — see [LICENSE](LICENSE).
-
----
-
-<div align="center">
-
-**Built with [ZCode](https://z.ai)** · sessions belong to you, not to the tool that made them
+[Back to top](#harness-bridge)
 
 </div>
+
+[release-badge]: https://img.shields.io/github/v/release/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=58616c
+[license-badge]: https://img.shields.io/badge/license-MIT-58616c?style=flat-square&labelColor=30343b
+[rust-badge]: https://img.shields.io/badge/Rust-stable-58616c?style=flat-square&labelColor=30343b
+[releases]: https://github.com/ahnafnafee/harness-bridge/releases

@@ -32,7 +32,9 @@ impl AgyProvider {
 }
 
 fn parse_agy_ts(ts: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp_millis())
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|d| d.timestamp_millis())
 }
 
 /// Generic protobuf wire-format walker (no schema): returns (field, wire, value).
@@ -99,7 +101,9 @@ fn sub(buf: &[u8], field: u64) -> Vec<Vec<u8>> {
 }
 
 fn str_field(buf: &[u8], field: u64) -> Option<String> {
-    sub(buf, field).into_iter().find_map(|v| String::from_utf8(v).ok())
+    sub(buf, field)
+        .into_iter()
+        .find_map(|v| String::from_utf8(v).ok())
 }
 
 fn looks_like_uuid(s: &str) -> bool {
@@ -232,9 +236,13 @@ impl AgyProvider {
     fn find_template(&self) -> anyhow::Result<AgyTemplate> {
         let db = self.summaries_db();
         if !db.exists() {
-            anyhow::bail!("no agy conversation index at {} — cannot pick a write template", db.display());
+            anyhow::bail!(
+                "no agy conversation index at {} — cannot pick a write template",
+                db.display()
+            );
         }
-        let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let con =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         con.busy_timeout(std::time::Duration::from_secs(10))?;
         let mut stmt = con.prepare(
             "select conversation_id from conversation_summaries
@@ -266,7 +274,12 @@ impl AgyProvider {
             anyhow::bail!("no conversation db");
         }
         // brain transcript supplies the exact template texts
-        let logs = self.agy_dir.join("brain").join(id).join(".system_generated").join("logs");
+        let logs = self
+            .agy_dir
+            .join("brain")
+            .join(id)
+            .join(".system_generated")
+            .join("logs");
         let mut user_text = None;
         let mut asst_text = None;
         for name in ["transcript_full.jsonl", "transcript.jsonl"] {
@@ -275,12 +288,17 @@ impl AgyProvider {
                 continue;
             }
             for ln in std::fs::read_to_string(&p)?.lines() {
-                let Ok(o) = serde_json::from_str::<Value>(ln) else { continue };
+                let Ok(o) = serde_json::from_str::<Value>(ln) else {
+                    continue;
+                };
                 let typ = o.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 let source = o.get("source").and_then(|t| t.as_str()).unwrap_or("");
                 match (typ, source) {
                     ("USER_INPUT", _) if user_text.is_none() => {
-                        let raw = o.get("content").and_then(|c| c.as_str()).unwrap_or_default();
+                        let raw = o
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or_default();
                         // brain transcripts wrap the raw prompt in <USER_REQUEST>…</USER_REQUEST>
                         let inner = raw
                             .split_once("<USER_REQUEST>")
@@ -290,7 +308,10 @@ impl AgyProvider {
                         user_text = Some(inner.trim_matches('\n').to_string());
                     }
                     ("PLANNER_RESPONSE", "MODEL") | ("GENERIC", "MODEL") if asst_text.is_none() => {
-                        asst_text = o.get("content").and_then(|c| c.as_str()).map(str::to_string)
+                        asst_text = o
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .map(str::to_string)
                     }
                     _ => {}
                 }
@@ -309,12 +330,17 @@ impl AgyProvider {
             anyhow::bail!("empty template texts");
         }
 
-        let con = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let con = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
         let mut user_payload = None;
         let mut asst_payload = None;
         let rows: Vec<(i64, Vec<u8>)> = {
             let mut stmt = con.prepare("select step_type, step_payload from steps order by idx")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?)))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+            })?;
             rows.filter_map(|r| r.ok())
                 .filter_map(|(t, p)| p.map(|p| (t, p)))
                 .collect()
@@ -337,7 +363,10 @@ impl AgyProvider {
 
         // summaries row copy
         let sdb = self.summaries_db();
-        let scon = rusqlite::Connection::open_with_flags(&sdb, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let scon = rusqlite::Connection::open_with_flags(
+            &sdb,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
         let columns: Vec<String> = {
             let mut stmt = scon.prepare("pragma table_info(conversation_summaries)")?;
             let cols = stmt
@@ -366,11 +395,16 @@ impl AgyProvider {
 
         let cascade_id = id.to_string();
         let trajectory_id = {
-            let tcon = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let tcon = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
             let tid = tcon
-                .query_row("select trajectory_id from trajectory_meta limit 1", [], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_row(
+                    "select trajectory_id from trajectory_meta limit 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
                 .unwrap_or_default();
             tcon.close().ok();
             tid
@@ -422,7 +456,10 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
                     }),
                     _ => {
                         if !args_json.is_empty() {
-                            out.push(EventKind::ToolResult { call_id, text: args_json });
+                            out.push(EventKind::ToolResult {
+                                call_id,
+                                text: args_json,
+                            });
                         }
                     }
                 }
@@ -437,7 +474,11 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
                 .or_else(|| sub(payload, 19).into_iter().find_map(|n| str_field(&n, 2)))
                 .unwrap_or_default();
             if !text.trim().is_empty() {
-                out.push(EventKind::Message { role: Role::User, text, source_kind: None });
+                out.push(EventKind::Message {
+                    role: Role::User,
+                    text,
+                    source_kind: None,
+                });
             }
         }
         15 => {
@@ -447,7 +488,11 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
                 .and_then(|n| str_field(n, 3))
                 .unwrap_or_default();
             if !text.trim().is_empty() {
-                out.push(EventKind::Message { role: Role::Assistant, text, source_kind: None });
+                out.push(EventKind::Message {
+                    role: Role::Assistant,
+                    text,
+                    source_kind: None,
+                });
             }
             out.extend(tool_records(payload));
         }
@@ -459,7 +504,11 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
                 let name = str_field(payload, 2);
                 let args_json = str_field(payload, 3).unwrap_or_default();
                 if let (Some(name), false) = (name, call_id.is_empty()) {
-                    out.push(EventKind::ToolCall { call_id, name, arguments: args_json });
+                    out.push(EventKind::ToolCall {
+                        call_id,
+                        name,
+                        arguments: args_json,
+                    });
                 }
             } else {
                 out.extend(calls);
@@ -470,7 +519,10 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
                     for twenty_one in sub(&twenty_eight, 21) {
                         if let Some(text) = str_field(&twenty_one, 1) {
                             if !text.trim().is_empty() {
-                                out.push(EventKind::ToolResult { call_id: String::new(), text });
+                                out.push(EventKind::ToolResult {
+                                    call_id: String::new(),
+                                    text,
+                                });
                             }
                         }
                     }
@@ -480,7 +532,10 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
         98 => {
             if let Some(text) = sub(payload, 111).first().and_then(|n| str_field(n, 1)) {
                 if !text.trim().is_empty() {
-                    out.push(EventKind::Compaction { id: None, text: Some(text) });
+                    out.push(EventKind::Compaction {
+                        id: None,
+                        text: Some(text),
+                    });
                 }
             }
         }
@@ -490,6 +545,10 @@ fn decode_step(step_type: i64, payload: &[u8], _ts: Option<i64>) -> Vec<EventKin
 }
 
 impl super::Provider for AgyProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn name(&self) -> &'static str {
         "agy"
     }
@@ -499,7 +558,8 @@ impl super::Provider for AgyProvider {
         if !db.exists() {
             anyhow::bail!("no agy conversation index at {}", db.display());
         }
-        let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let con =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut stmt = con.prepare(
             "select conversation_id, title, last_modified_time, workspace_uris, step_count
              from conversation_summaries order by last_modified_time desc",
@@ -518,7 +578,12 @@ impl super::Provider for AgyProvider {
             let (id, title, modified, workspaces, steps) = row?;
             let cwd = serde_json::from_str::<Value>(&workspaces)
                 .ok()
-                .and_then(|v| v.as_array().and_then(|a| a.first()).and_then(|w| w.as_str()).map(str::to_string))
+                .and_then(|v| {
+                    v.as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|w| w.as_str())
+                        .map(str::to_string)
+                })
                 .map(|w| w.trim_start_matches("file://").to_string())
                 // file:///C:/... -> C:/... (drop the leading slash before a drive letter)
                 .map(|w| {
@@ -562,15 +627,23 @@ impl super::Provider for AgyProvider {
             }
             let text = std::fs::read_to_string(&p)?;
             for ln in text.lines() {
-                let Ok(o) = serde_json::from_str::<Value>(ln) else { continue };
-                let ts = o.get("created_at").and_then(|t| t.as_str()).and_then(parse_agy_ts);
+                let Ok(o) = serde_json::from_str::<Value>(ln) else {
+                    continue;
+                };
+                let ts = o
+                    .get("created_at")
+                    .and_then(|t| t.as_str())
+                    .and_then(parse_agy_ts);
                 if let Some(t) = ts {
                     created_ms = created_ms.min(t);
                     updated_ms = updated_ms.max(t);
                 }
                 let typ = o.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 let source = o.get("source").and_then(|t| t.as_str()).unwrap_or("");
-                let content = o.get("content").and_then(|t| t.as_str()).map(str::to_string);
+                let content = o
+                    .get("content")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string);
                 match typ {
                     "USER_INPUT" => {
                         let text = content.unwrap_or_default();
@@ -580,40 +653,58 @@ impl super::Provider for AgyProvider {
                             .map(str::to_string)
                             .unwrap_or(text);
                         if !inner.trim().is_empty() {
-                            events.push(Event::at(ts, EventKind::Message {
-                                role: Role::User,
-                                text: inner,
-                                source_kind: Some("agy-user".into()),
-                            }));
+                            events.push(Event::at(
+                                ts,
+                                EventKind::Message {
+                                    role: Role::User,
+                                    text: inner,
+                                    source_kind: Some("agy-user".into()),
+                                },
+                            ));
                         }
                     }
                     "PLANNER_RESPONSE" => {
                         if let Some(calls) = o.get("tool_calls").and_then(|c| c.as_array()) {
                             for (i, c) in calls.iter().enumerate() {
-                                events.push(Event::at(ts, EventKind::ToolCall {
-                                    call_id: format!("agy-{}-{i}", r.id),
-                                    name: c.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string(),
-                                    arguments: serde_json::to_string(c.get("args").unwrap_or(&json!({})))?,
-                                }));
+                                events.push(Event::at(
+                                    ts,
+                                    EventKind::ToolCall {
+                                        call_id: format!("agy-{}-{i}", r.id),
+                                        name: c
+                                            .get("name")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("unknown")
+                                            .to_string(),
+                                        arguments: serde_json::to_string(
+                                            c.get("args").unwrap_or(&json!({})),
+                                        )?,
+                                    },
+                                ));
                             }
                         } else if let Some(text) = content {
                             if !text.trim().is_empty() {
-                                events.push(Event::at(ts, EventKind::Message {
-                                    role: Role::Assistant,
-                                    text,
-                                    source_kind: None,
-                                }));
+                                events.push(Event::at(
+                                    ts,
+                                    EventKind::Message {
+                                        role: Role::Assistant,
+                                        text,
+                                        source_kind: None,
+                                    },
+                                ));
                             }
                         }
                     }
                     "GENERIC" if source == "MODEL" => {
                         if let Some(text) = content {
                             if !text.trim().is_empty() {
-                                events.push(Event::at(ts, EventKind::Message {
-                                    role: Role::Assistant,
-                                    text,
-                                    source_kind: Some("agy-generic".into()),
-                                }));
+                                events.push(Event::at(
+                                    ts,
+                                    EventKind::Message {
+                                        role: Role::Assistant,
+                                        text,
+                                        source_kind: Some("agy-generic".into()),
+                                    },
+                                ));
                             }
                         }
                     }
@@ -628,11 +719,17 @@ impl super::Provider for AgyProvider {
 
         if !used_jsonl {
             // fallback: heuristic protobuf decode from the per-conversation sqlite
-            let db = self.agy_dir.join("conversations").join(format!("{}.db", r.id));
+            let db = self
+                .agy_dir
+                .join("conversations")
+                .join(format!("{}.db", r.id));
             if !db.exists() {
                 anyhow::bail!("no agy transcript or conversation db found for {}", r.id);
             }
-            let con = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let con = rusqlite::Connection::open_with_flags(
+                &db,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
             let mut stmt = con.prepare("select step_type, step_payload from steps order by idx")?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
@@ -663,17 +760,26 @@ impl super::Provider for AgyProvider {
             created_ms,
             updated_ms: updated_ms.max(created_ms),
             events,
+            resume_events: None,
         })
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
         let template = self.find_template()?;
-        let cwd = opts.cwd.clone().or_else(|| s.cwd.clone()).unwrap_or_default();
+        let cwd = opts
+            .cwd
+            .clone()
+            .or_else(|| s.cwd.clone())
+            .unwrap_or_default();
         let name = opts
             .name
             .clone()
             .or_else(|| s.title.clone())
-            .unwrap_or_else(|| s.first_user_text().map(|t| t.lines().next().unwrap_or_default().to_string()).unwrap_or_default());
+            .unwrap_or_else(|| {
+                s.first_user_text()
+                    .map(|t| t.lines().next().unwrap_or_default().to_string())
+                    .unwrap_or_default()
+            });
 
         // collect the text turns; tool steps are not representable yet (documented)
         let mut turns: Vec<(i64, Role, String)> = Vec::new(); // (time_ms, role, text)
@@ -682,10 +788,18 @@ impl super::Provider for AgyProvider {
             let ms = s.event_ms(e, offset);
             offset += 1;
             match &e.kind {
-                EventKind::Message { role: Role::User, text, .. } if !text.trim().is_empty() => {
+                EventKind::Message {
+                    role: Role::User,
+                    text,
+                    ..
+                } if !text.trim().is_empty() => {
                     turns.push((ms, Role::User, text.clone()));
                 }
-                EventKind::Message { role: Role::Assistant, text, .. } if !text.trim().is_empty() => {
+                EventKind::Message {
+                    role: Role::Assistant,
+                    text,
+                    ..
+                } if !text.trim().is_empty() => {
                     turns.push((ms, Role::Assistant, text.clone()));
                 }
                 _ => {}
@@ -695,17 +809,36 @@ impl super::Provider for AgyProvider {
             anyhow::bail!("session has no user/assistant text turns to write natively (tool-only sessions are not supported yet)");
         }
 
-        let new_id = uuid7(s.created_ms, &format!("harness-bridge/v1|{}|{}", s.source, s.id));
-        let new_traj = uuid7(s.created_ms + 1, &format!("harness-bridge-traj|{}|{}", s.source, s.id));
+        let new_id = uuid7(
+            s.created_ms,
+            &format!("harness-bridge/v1|{}|{}", s.source, s.id),
+        );
+        let new_traj = uuid7(
+            s.created_ms + 1,
+            &format!("harness-bridge-traj|{}|{}", s.source, s.id),
+        );
 
         // build the per-step payloads by cloning the template envelopes
         let mut steps: Vec<(i64, Vec<u8>)> = Vec::new(); // (step_type, payload)
         for (i, (_, role, text)) in turns.iter().enumerate() {
             let (tpl_payload, tpl_text, tpl_uuid, step_type) = match role {
-                Role::User => (&template.user_payload, &template.user_text, &template.user_step_uuid, 14i64),
-                _ => (&template.asst_payload, &template.asst_text, &template.asst_step_uuid, 15i64),
+                Role::User => (
+                    &template.user_payload,
+                    &template.user_text,
+                    &template.user_step_uuid,
+                    14i64,
+                ),
+                _ => (
+                    &template.asst_payload,
+                    &template.asst_text,
+                    &template.asst_step_uuid,
+                    15i64,
+                ),
             };
-            let step_uuid = uuid7(s.created_ms + 2 + i as i64, &format!("agy-step|{}|{}", s.id, i));
+            let step_uuid = uuid7(
+                s.created_ms + 2 + i as i64,
+                &format!("agy-step|{}|{}", s.id, i),
+            );
             let mut pairs: Vec<(String, String)> = vec![(tpl_text.clone(), text.clone())];
             if let Some(u) = tpl_uuid {
                 pairs.push((u.clone(), step_uuid));
@@ -740,9 +873,15 @@ impl super::Provider for AgyProvider {
 
         if !opts.dry_run {
             // 1. conversation db (cloned from the template db, steps rebuilt)
-            let dst = self.agy_dir.join("conversations").join(format!("{new_id}.db"));
+            let dst = self
+                .agy_dir
+                .join("conversations")
+                .join(format!("{new_id}.db"));
             std::fs::create_dir_all(dst.parent().unwrap())?;
-            let tpl_db = self.agy_dir.join("conversations").join(format!("{}.db", template.cascade_id));
+            let tpl_db = self
+                .agy_dir
+                .join("conversations")
+                .join(format!("{}.db", template.cascade_id));
             std::fs::copy(&tpl_db, &dst)?;
             let con = rusqlite::Connection::open(&dst)?;
             con.busy_timeout(std::time::Duration::from_secs(10))?;
@@ -764,9 +903,14 @@ impl super::Provider for AgyProvider {
             let sdb = self.summaries_db();
             let scon = rusqlite::Connection::open(&sdb)?;
             scon.busy_timeout(std::time::Duration::from_secs(10))?;
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.6f+00:00").to_string();
+            let now = chrono::Utc::now()
+                .format("%Y-%m-%d %H:%M:%S%.6f+00:00")
+                .to_string();
             let uri = format!("file:///{}", cwd.replace('\\', "/").trim_start_matches('/'));
-            if let (Some(row), true) = (&template.summaries_row, !template.summaries_columns.is_empty()) {
+            if let (Some(row), true) = (
+                &template.summaries_row,
+                !template.summaries_columns.is_empty(),
+            ) {
                 let cols: Vec<String> = row.iter().map(|(c, _)| c.clone()).collect();
                 let vals: Vec<rusqlite::types::Value> = row
                     .iter()
@@ -778,9 +922,7 @@ impl super::Provider for AgyProvider {
                         "last_modified_time" | "last_user_input_time" => {
                             rusqlite::types::Value::Text(now.clone())
                         }
-                        "workspace_uris" => {
-                            rusqlite::types::Value::Text(json!([uri]).to_string())
-                        }
+                        "workspace_uris" => rusqlite::types::Value::Text(json!([uri]).to_string()),
                         "status" => rusqlite::types::Value::Text(String::new()),
                         _ => v.clone(),
                     })
@@ -797,7 +939,12 @@ impl super::Provider for AgyProvider {
             scon.close().ok();
 
             // 3. brain transcripts (agy's own plain-JSONL history)
-            let logs = self.agy_dir.join("brain").join(&new_id).join(".system_generated").join("logs");
+            let logs = self
+                .agy_dir
+                .join("brain")
+                .join(&new_id)
+                .join(".system_generated")
+                .join("logs");
             std::fs::create_dir_all(&logs)?;
             let mut lines = String::new();
             for (i, (ms, role, text)) in turns.iter().enumerate() {
@@ -818,12 +965,20 @@ impl super::Provider for AgyProvider {
             // 4. title annotation
             let ann = self.agy_dir.join("annotations");
             std::fs::create_dir_all(&ann)?;
-            std::fs::write(ann.join(format!("{new_id}.pbtxt")), format!("title:\"{}\"\n", name.replace('"', "'")))?;
+            std::fs::write(
+                ann.join(format!("{new_id}.pbtxt")),
+                format!("title:\"{}\"\n", name.replace('"', "'")),
+            )?;
         }
 
         Ok(WriteOutcome {
             provider: "agy".into(),
-            location: self.agy_dir.join("conversations").join(format!("{new_id}.db")).to_string_lossy().to_string(),
+            location: self
+                .agy_dir
+                .join("conversations")
+                .join(format!("{new_id}.db"))
+                .to_string_lossy()
+                .to_string(),
             native_id: new_id,
             extra: json!({
                 "steps": steps.len(),
@@ -874,12 +1029,15 @@ mod tests {
         let out = rewire(&buf, &mut repl).unwrap();
         assert!(contains_utf8_leaf(&out, "hello, brave new world"));
         assert!(!contains_utf8_leaf(&out, "hello\u{0}")); // no corruption
-        // nested untouched, structure preserved: parse back
-        // wire_fields only collects length-delimited leaves; the wire-0 field is preserved too
+                                                          // nested untouched, structure preserved: parse back
+                                                          // wire_fields only collects length-delimited leaves; the wire-0 field is preserved too
         let fields = wire_fields(&out);
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].0, 2);
-        assert_eq!(str_field(&out, 2).as_deref(), Some("hello, brave new world"));
+        assert_eq!(
+            str_field(&out, 2).as_deref(),
+            Some("hello, brave new world")
+        );
         assert_eq!(fields[1].0, 3);
         let nested2 = sub(&out, 3);
         assert_eq!(nested2.len(), 1);

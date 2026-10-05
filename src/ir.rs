@@ -1,9 +1,9 @@
 //! Normalized intermediate representation shared by all providers.
 //!
 //! Readers map a harness-native transcript into a [`Session`]; writers map a
-//! [`Session`] back into their native format. Fidelity notes live with each
-//! provider; anything a provider cannot represent natively stays in
-//! [`EventKind::Meta`].
+//! [`Session`] back into their native format. [`EventKind::Meta`] carries
+//! structured source records where supported; fidelity limits live with each
+//! provider.
 
 use serde::{Deserialize, Serialize};
 
@@ -83,19 +83,20 @@ pub struct Session {
     pub created_ms: i64,
     pub updated_ms: i64,
     pub events: Vec<Event>,
+    /// Current model context after the source harness's replacements/pruning.
+    /// `events` remains the complete transcript for display and archival fidelity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_events: Option<Vec<Event>>,
 }
 
 impl Session {
     pub fn first_user_text(&self) -> Option<String> {
         self.events.iter().find_map(|e| match &e.kind {
-            EventKind::Message { role: Role::User, text, .. } if !text.trim().is_empty() => Some(text.clone()),
-            _ => None,
-        })
-    }
-
-    pub fn last_assistant_text(&self) -> Option<String> {
-        self.events.iter().rev().find_map(|e| match &e.kind {
-            EventKind::Message { role: Role::Assistant, text, .. } if !text.trim().is_empty() => Some(text.clone()),
+            EventKind::Message {
+                role: Role::User,
+                text,
+                ..
+            } if !text.trim().is_empty() => Some(text.clone()),
             _ => None,
         })
     }

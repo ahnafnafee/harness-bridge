@@ -4,10 +4,14 @@
 //! transcripts and writes the same format back (plain JSONL; dsh stores them
 //! zstd-compressed but the event schema is identical).
 
-use crate::ir::{Event, EventKind, Role, Session, SessionRef, WriteOpts, WriteOutcome};
+use crate::ir::{EventKind, Role, Session, SessionRef, WriteOpts, WriteOutcome};
 use crate::util::{read_maybe_zstd, uuid7};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+
+mod context;
+
+use context::{decode_events, replay_surface};
 
 pub struct DshProvider {
     pub dsh_home: PathBuf,
@@ -49,7 +53,12 @@ impl DshProvider {
 
     fn projcache_title(&self, dsh_id: &str) -> Option<String> {
         for name in [format!("{dsh_id}.json"), format!("session-{dsh_id}.json")] {
-            let p = self.dsh_home.join("storages").join("session_projcache").join("sessions").join(&name);
+            let p = self
+                .dsh_home
+                .join("storages")
+                .join("session_projcache")
+                .join("sessions")
+                .join(&name);
             if let Ok(txt) = std::fs::read_to_string(&p) {
                 if let Ok(v) = serde_json::from_str::<Value>(&txt) {
                     if let Some(t) = v.pointer("/record/rows/title/val").and_then(|t| t.as_str()) {
@@ -62,9 +71,119 @@ impl DshProvider {
         }
         None
     }
+
+    /// Port a dsh conversation to a different agent preset: copy the raw
+    /// transcript (full event fidelity — telemetry, seeds, everything), rewrite
+    /// the header's id + agentPreset, and clone the session's projcache entry
+    /// with the preset row patched so the desktop list shows it under the
+    /// target preset. Idempotent: same source + preset -> same new session id.
+    pub fn port_preset(
+        &self,
+        src: &SessionRef,
+        target_preset: &str,
+        opts: &WriteOpts,
+    ) -> anyhow::Result<WriteOutcome> {
+        if !self
+            .dsh_home
+            .join(".agent-presets")
+            .join(target_preset)
+            .is_dir()
+        {
+            anyhow::bail!(
+                "preset '{target_preset}' is not installed as a directory preset under {}. \
+                 Directory presets are what the dsh CLI reads; install it (or run its sync.mjs for the desktop app) first.",
+                self.dsh_home.join(".agent-presets").display()
+            );
+        }
+        let text = read_maybe_zstd(Path::new(&src.locator))?;
+        let mut lines = text.lines();
+        let mut header: Value = serde_json::from_str(
+            lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("empty dsh transcript"))?,
+        )?;
+        if header.get("type").and_then(|t| t.as_str()) != Some("session") {
+            anyhow::bail!("unexpected dsh transcript header");
+        }
+        let created_ms = header
+            .get("createdAt")
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0);
+        let body = lines.collect::<Vec<_>>();
+
+        // deterministic per (source session, target preset)
+        let new_id = uuid7(
+            created_ms,
+            &format!("dsh-port|{}|{}", src.id, target_preset),
+        );
+
+        header["id"] = json!(new_id);
+        header["agentPreset"] = json!(target_preset);
+        let mut out = vec![header.to_string()];
+        out.extend(body.iter().map(|s| s.to_string()));
+
+        if !opts.dry_run {
+            // transcript: same project dir as the source, compressed like dsh writes
+            // locator = <home>/sessions/<project-slug>/<session-id>/session.v4.jsonl[.zstd]
+            let project_dir = Path::new(&src.locator)
+                .parent()
+                .and_then(|p| p.parent())
+                .ok_or_else(|| anyhow::anyhow!("bad locator"))?;
+            let dst_dir = project_dir.join(&new_id);
+            std::fs::create_dir_all(&dst_dir)?;
+            let dst = dst_dir.join("session.v4.jsonl.zstd");
+            let compressed = zstd::stream::encode_all(out.join("\n").as_bytes(), 3)?;
+            std::fs::write(&dst, &compressed)?;
+
+            // projcache: clone the source's entry with the preset row patched
+            let proj_dir = self
+                .dsh_home
+                .join("storages")
+                .join("session_projcache")
+                .join("sessions");
+            for name in [
+                format!("{}.json", src.id),
+                format!("session-{}.json", src.id),
+            ] {
+                let p = proj_dir.join(&name);
+                if let Ok(txt) = std::fs::read_to_string(&p) {
+                    if let Ok(mut v) = serde_json::from_str::<Value>(&txt) {
+                        if let Some(val) = v.pointer_mut("/record/rows/agentPreset/val") {
+                            *val = json!(target_preset);
+                        }
+                        let dst_proj = proj_dir.join(format!("{new_id}.json"));
+                        std::fs::write(&dst_proj, serde_json::to_string_pretty(&v)?)?;
+                        break;
+                    }
+                }
+            }
+
+            Ok(WriteOutcome {
+                provider: "dsh".into(),
+                location: dst.to_string_lossy().to_string(),
+                native_id: new_id,
+                extra: json!({
+                    "preset": target_preset,
+                    "events": out.len(),
+                    "note": "raw transcript copy with header agentPreset rewritten; projcache cloned with agentPreset row patched",
+                }),
+            })
+        } else {
+            Ok(WriteOutcome {
+                provider: "dsh".into(),
+                location: "(dry run)".into(),
+                native_id: new_id,
+                extra: json!({"preset": target_preset, "events": out.len(), "dry_run": true}),
+            })
+        }
+    }
 }
 
 impl super::Provider for DshProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn name(&self) -> &'static str {
         "dsh"
     }
@@ -88,11 +207,19 @@ impl super::Provider for DshProvider {
                 if dsh_id.len() != 36 || dsh_id.chars().filter(|c| *c == '-').count() != 4 {
                     continue;
                 }
-                let transcript = ["session.v4.jsonl.zstd", "session.v4.jsonl", "session.v3.jsonl.zstd", "session.v3.jsonl", "session.jsonl"]
-                    .iter()
-                    .map(|f| s.path().join(f))
-                    .find(|p| p.exists());
-                let Some(transcript) = transcript else { continue };
+                let transcript = [
+                    "session.v4.jsonl.zstd",
+                    "session.v4.jsonl",
+                    "session.v3.jsonl.zstd",
+                    "session.v3.jsonl",
+                    "session.jsonl",
+                ]
+                .iter()
+                .map(|f| s.path().join(f))
+                .find(|p| p.exists());
+                let Some(transcript) = transcript else {
+                    continue;
+                };
                 let title = self.projcache_title(&dsh_id);
                 out.push(SessionRef {
                     provider: "dsh".into(),
@@ -113,7 +240,9 @@ impl super::Provider for DshProvider {
         let text = read_maybe_zstd(Path::new(&r.locator))?;
         let mut lines = text.lines();
         let header: Value = serde_json::from_str(
-            lines.next().ok_or_else(|| anyhow::anyhow!("empty dsh transcript"))?,
+            lines
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("empty dsh transcript"))?,
         )?;
         if header.get("type").and_then(|t| t.as_str()) != Some("session") {
             anyhow::bail!("unexpected dsh transcript header");
@@ -129,197 +258,42 @@ impl super::Provider for DshProvider {
         let created_ms = events.iter().map(|(t, _)| *t).min().unwrap_or(0);
         let updated_ms = events.iter().map(|(t, _)| *t).max().unwrap_or(0);
 
-        let user_msg_ids: std::collections::HashSet<String> = events
-            .iter()
-            .filter_map(|(_, v)| {
-                if v.get("type").and_then(|t| t.as_str()) == Some("user/message") {
-                    v.pointer("/data/id").and_then(|i| i.as_str()).map(str::to_string)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut evs: Vec<Event> = Vec::new();
-        let mut seen_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // call_id -> index in evs of the ToolResult event (for merging duplicate results)
-        let mut result_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut title: Option<String> = None;
-
-        for (time, v) in &events {
-            let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            let d = v.get("data").cloned().unwrap_or(Value::Null);
-            match t {
-                "turn/start" => evs.push(Event::at(Some(*time), EventKind::TurnStart)),
-                "turn/end" => evs.push(Event::at(
-                    Some(*time),
-                    EventKind::TurnEnd {
-                        reason: d.pointer("/reason/kind").and_then(|k| k.as_str()).map(str::to_string),
-                    },
-                )),
-                "session/title" => {
-                    title = d.get("title").and_then(|t| t.as_str()).map(str::to_string);
-                }
-                "system/message" => {
-                    let text = join_text(&block_texts(d.pointer("/message/content")));
-                    if !text.is_empty() {
-                        evs.push(Event::at(Some(*time), EventKind::Message {
-                            role: Role::Developer,
-                            text,
-                            source_kind: Some("system-prompt".into()),
-                        }));
-                    }
-                }
-                "user/message" => {
-                    let text = join_text(&block_texts(d.get("content")));
-                    if !text.is_empty() {
-                        let kind = d.pointer("/source/kind").and_then(|k| k.as_str()).map(str::to_string);
-                        evs.push(Event::at(Some(*time), EventKind::Message {
-                            role: if is_real_user(kind.as_deref()) { Role::User } else { Role::Developer },
-                            text,
-                            source_kind: kind,
-                        }));
-                    }
-                }
-                "agent/inbox/spliced" => {
-                    if let Some(inserted) = d.get("inserted").and_then(|i| i.as_array()) {
-                        for ins in inserted {
-                            let id = ins.get("id").and_then(|i| i.as_str());
-                            if id.map(|i| user_msg_ids.contains(i)).unwrap_or(false) {
-                                continue; // surfaced later as user/message
-                            }
-                            let text = join_text(&block_texts(ins.get("content")));
-                            if !text.is_empty() {
-                                let kind = ins.pointer("/source/kind").and_then(|k| k.as_str()).map(str::to_string);
-                                evs.push(Event::at(Some(*time), EventKind::Message {
-                                    role: if is_real_user(kind.as_deref()) { Role::User } else { Role::Developer },
-                                    text,
-                                    source_kind: kind,
-                                }));
-                            }
-                        }
-                    }
-                }
-                "assistant/message" => {
-                    let msg = d.get("message").cloned().unwrap_or(Value::Null);
-                    let mut reasoning = Vec::new();
-                    let mut text = Vec::new();
-                    for b in msg.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
-                        match b.get("type").and_then(|t| t.as_str()) {
-                            Some("reasoning") => {
-                                if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
-                                    reasoning.push(s.to_string());
-                                }
-                            }
-                            Some("text") => {
-                                if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
-                                    text.push(s.to_string());
-                                }
-                            }
-                            _ => {} // tool-call blocks are captured by tool/call events
-                        }
-                    }
-                    if !reasoning.is_empty() {
-                        evs.push(Event::at(Some(*time), EventKind::Reasoning { text: join_text(&reasoning) }));
-                    }
-                    let text = join_text(&text);
-                    if !text.is_empty() {
-                        evs.push(Event::at(Some(*time), EventKind::Message {
-                            role: Role::Assistant,
-                            text,
-                            source_kind: None,
-                        }));
-                    }
-                }
-                "tool/call" => {
-                    if let Some(cid) = d.get("callId").and_then(|c| c.as_str()) {
-                        if seen_calls.insert(cid.to_string()) {
-                            evs.push(Event::at(Some(*time), EventKind::ToolCall {
-                                call_id: cid.to_string(),
-                                name: d.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string(),
-                                arguments: d.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}").to_string(),
-                            }));
-                        }
-                    }
-                }
-                "tool/result" => {
-                    let cid = d.pointer("/message/toolCallId").and_then(|c| c.as_str()).map(str::to_string);
-                    let Some(cid) = cid else { continue };
-                    let text = join_text(&block_texts(d.pointer("/message/content")));
-                    match result_idx.get(&cid) {
-                        Some(&i) => {
-                            if let EventKind::ToolResult { text: prev, .. } = &mut evs[i].kind {
-                                *prev = join_text(&[prev.clone(), text]);
-                            }
-                        }
-                        None => {
-                            evs.push(Event::at(Some(*time), EventKind::ToolResult { call_id: cid.clone(), text }));
-                            result_idx.insert(cid, evs.len() - 1);
-                        }
-                    }
-                }
-                "compaction/summary" => {
-                    let text = join_text(&block_texts(d.get("summary")));
-                    evs.push(Event::at(Some(*time), EventKind::Compaction {
-                        id: d.get("compactionId").and_then(|c| c.as_str()).map(str::to_string),
-                        text: (!text.is_empty()).then_some(text),
-                    }));
-                }
-                "developer/message" => {
-                    let mut added = Vec::new();
-                    let mut removed = Vec::new();
-                    for b in d.pointer("/message/content").and_then(|c| c.as_array()).into_iter().flatten() {
-                        match b.get("type").and_then(|t| t.as_str()) {
-                            Some("tool-addition") => {
-                                if let Some(n) = b.get("toolName").and_then(|n| n.as_str()) {
-                                    added.push(n.to_string());
-                                }
-                            }
-                            Some("tool-removal") => {
-                                if let Some(n) = b.get("toolName").and_then(|n| n.as_str()) {
-                                    removed.push(n.to_string());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    if !added.is_empty() || !removed.is_empty() {
-                        evs.push(Event::at(Some(*time), EventKind::Meta {
-                            kind: "tool-registry".into(),
-                            data: json!({"added": added, "removed": removed}),
-                        }));
-                    }
-                }
-                "goal/change" => {
-                    if d.get("operation").and_then(|o| o.as_str()) == Some("create") {
-                        if let Some(obj) = d.pointer("/goal/objective").and_then(|o| o.as_str()) {
-                            evs.push(Event::at(Some(*time), EventKind::Meta {
-                                kind: "goal".into(),
-                                data: json!({"objective": obj}),
-                            }));
-                        }
-                    }
-                }
-                _ => {} // telemetry: retries, request headers, sandbox modes, titles, ...
-            }
-        }
+        let (evs, title) = decode_events(&events);
+        let resume_events = replay_surface(&events)?.map(|surface| decode_events(&surface).0);
 
         Ok(Session {
             source: "dsh".into(),
             id: r.id.clone(),
             title: title.or_else(|| r.title.clone()),
-            cwd: header.get("cwd").and_then(|c| c.as_str()).map(str::to_string),
-            agent_preset: header.get("agentPreset").and_then(|c| c.as_str()).map(str::to_string),
-            parent_session: header.get("parentSession").and_then(|c| c.as_str()).map(str::to_string),
-            origin: header.get("origin").and_then(|c| c.as_str()).map(str::to_string),
+            cwd: header
+                .get("cwd")
+                .and_then(|c| c.as_str())
+                .map(str::to_string),
+            agent_preset: header
+                .get("agentPreset")
+                .and_then(|c| c.as_str())
+                .map(str::to_string),
+            parent_session: header
+                .get("parentSession")
+                .and_then(|c| c.as_str())
+                .map(str::to_string),
+            origin: header
+                .get("origin")
+                .and_then(|c| c.as_str())
+                .map(str::to_string),
             created_ms,
             updated_ms,
             events: evs,
+            resume_events,
         })
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
-        let cwd = opts.cwd.clone().or_else(|| s.cwd.clone()).unwrap_or_default();
+        let cwd = opts
+            .cwd
+            .clone()
+            .or_else(|| s.cwd.clone())
+            .unwrap_or_default();
         // stable per source session so re-imports overwrite instead of duplicating
         let new_id = uuid7(s.created_ms, &format!("dsh-import|{}", s.id));
 
@@ -368,35 +342,51 @@ impl super::Provider for DshProvider {
                     push!(time, json!({"type": "turn/start", "data": {"turn": turn}}));
                 }
                 EventKind::TurnEnd { reason } => {
-                    push!(time, json!({"type": "turn/end", "data": {"turn": turn, "reason": {"kind": reason.clone().unwrap_or_else(|| "end".into())}}}));
+                    push!(
+                        time,
+                        json!({"type": "turn/end", "data": {"turn": turn, "reason": {"kind": reason.clone().unwrap_or_else(|| "end".into())}}})
+                    );
                 }
-                EventKind::Message { role, text, source_kind } => match role {
+                EventKind::Message {
+                    role,
+                    text,
+                    source_kind,
+                } => match role {
                     Role::User => {
-                        push!(time, json!({
-                            "type": "user/message",
-                            "data": {
-                                "content": [{"type": "text", "text": text}],
-                                "source": {"kind": source_kind.clone().unwrap_or_else(|| "user".into())},
-                                "role": "user",
-                                "id": uuid7(time, &format!("dsh-user|{seq}")),
-                            },
-                            "surfaceOp": "append"
-                        }));
+                        push!(
+                            time,
+                            json!({
+                                "type": "user/message",
+                                "data": {
+                                    "content": [{"type": "text", "text": text}],
+                                    "source": {"kind": source_kind.clone().unwrap_or_else(|| "user".into())},
+                                    "role": "user",
+                                    "id": uuid7(time, &format!("dsh-user|{seq}")),
+                                },
+                                "surfaceOp": "append"
+                            })
+                        );
                     }
                     Role::Developer => {
                         if source_kind.as_deref() == Some("system-prompt") {
-                            push!(time, json!({
-                                "type": "system/message",
-                                "data": {"turn": turn, "step": 1,
-                                         "message": {"role": "system", "content": [{"type": "text", "text": text}]}}
-                            }));
+                            push!(
+                                time,
+                                json!({
+                                    "type": "system/message",
+                                    "data": {"turn": turn, "step": 1,
+                                             "message": {"role": "system", "content": [{"type": "text", "text": text}]}}
+                                })
+                            );
                         } else {
-                            push!(time, json!({
-                                "type": "developer/message",
-                                "data": {"turn": turn, "step": 1,
-                                         "message": {"role": "developer", "source": {"kind": source_kind.clone().unwrap_or_else(|| "import".into())},
-                                                     "content": [{"type": "text", "text": text}]}}
-                            }));
+                            push!(
+                                time,
+                                json!({
+                                    "type": "developer/message",
+                                    "data": {"turn": turn, "step": 1,
+                                             "message": {"role": "developer", "source": {"kind": source_kind.clone().unwrap_or_else(|| "import".into())},
+                                                         "content": [{"type": "text", "text": text}]}}
+                                })
+                            );
                         }
                     }
                     Role::Assistant => {
@@ -405,59 +395,99 @@ impl super::Provider for DshProvider {
                             content.push(json!({"type": "reasoning", "text": r}));
                         }
                         content.push(json!({"type": "text", "text": text}));
-                        push!(time, json!({
-                            "type": "assistant/message",
-                            "data": {"turn": turn, "step": 1,
-                                     "message": {"role": "assistant", "source": {"kind": "model"}, "content": content}}
-                        }));
+                        push!(
+                            time,
+                            json!({
+                                "type": "assistant/message",
+                                "data": {"turn": turn, "step": 1,
+                                         "message": {"role": "assistant", "source": {"kind": "model"}, "content": content}}
+                            })
+                        );
                     }
                 },
                 EventKind::Reasoning { text } => {
                     pending_reasoning = Some((time, text.clone()));
                 }
-                EventKind::ToolCall { call_id, name, arguments } => {
-                    push!(time, json!({
-                        "type": "tool/call",
-                        "data": {"turn": turn, "step": 1, "callId": call_id, "name": name, "arguments": arguments}
-                    }));
+                EventKind::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    push!(
+                        time,
+                        json!({
+                            "type": "tool/call",
+                            "data": {"turn": turn, "step": 1, "callId": call_id, "name": name, "arguments": arguments}
+                        })
+                    );
                 }
                 EventKind::ToolResult { call_id, text } => {
-                    push!(time, json!({
-                        "type": "tool/result",
-                        "data": {"turn": turn, "step": 1,
-                                 "message": {"role": "tool", "source": {"kind": "tool", "callId": call_id},
-                                             "toolCallId": call_id, "content": [{"type": "text", "text": text}]}}
-                    }));
+                    push!(
+                        time,
+                        json!({
+                            "type": "tool/result",
+                            "data": {"turn": turn, "step": 1,
+                                     "message": {"role": "tool", "source": {"kind": "tool", "callId": call_id},
+                                                 "toolCallId": call_id, "content": [{"type": "text", "text": text}]}}
+                        })
+                    );
                 }
                 EventKind::Compaction { id, text } => {
-                    let cid = id.clone().unwrap_or_else(|| uuid7(time, &format!("dsh-cmp|{seq}")));
-                    push!(time, json!({"type": "compaction/start", "data": {"compactionId": cid, "turn": turn}}));
-                    push!(time, json!({"type": "compaction/summary", "data": {"compactionId": cid, "summary": [{"type": "text", "text": text.clone().unwrap_or_default()}]}}));
-                    push!(time, json!({"type": "compaction/end", "data": {"compactionId": cid, "turn": turn}}));
+                    let cid = id
+                        .clone()
+                        .unwrap_or_else(|| uuid7(time, &format!("dsh-cmp|{seq}")));
+                    push!(
+                        time,
+                        json!({"type": "compaction/start", "data": {"compactionId": cid, "turn": turn}})
+                    );
+                    push!(
+                        time,
+                        json!({"type": "compaction/summary", "data": {"compactionId": cid, "summary": [{"type": "text", "text": text.clone().unwrap_or_default()}]}})
+                    );
+                    push!(
+                        time,
+                        json!({"type": "compaction/end", "data": {"compactionId": cid, "turn": turn}})
+                    );
                 }
                 EventKind::Meta { kind, data } => match kind.as_str() {
                     "tool-registry" => {
                         let mut content = Vec::new();
-                        for n in data.get("added").and_then(|a| a.as_array()).into_iter().flatten() {
+                        for n in data
+                            .get("added")
+                            .and_then(|a| a.as_array())
+                            .into_iter()
+                            .flatten()
+                        {
                             content.push(json!({"type": "tool-addition", "toolName": n}));
                         }
-                        for n in data.get("removed").and_then(|a| a.as_array()).into_iter().flatten() {
+                        for n in data
+                            .get("removed")
+                            .and_then(|a| a.as_array())
+                            .into_iter()
+                            .flatten()
+                        {
                             content.push(json!({"type": "tool-removal", "toolName": n}));
                         }
-                        push!(time, json!({
-                            "type": "developer/message",
-                            "data": {"turn": turn, "step": 1, "headerSeq": seq,
-                                     "message": {"role": "developer", "source": {"kind": "tool-registry"}, "content": content}}
-                        }));
+                        push!(
+                            time,
+                            json!({
+                                "type": "developer/message",
+                                "data": {"turn": turn, "step": 1, "headerSeq": seq,
+                                         "message": {"role": "developer", "source": {"kind": "tool-registry"}, "content": content}}
+                            })
+                        );
                     }
                     "goal" => {
-                        push!(time, json!({
-                            "type": "goal/change",
-                            "data": {"kind": "goal/change", "version": 1, "operation": "create",
-                                     "goal": {"id": uuid7(time, "dsh-goal"), "revision": 1,
-                                              "objective": data.get("objective").cloned().unwrap_or(Value::Null),
-                                              "phase": "active", "maxGoalRounds": 40}}
-                        }));
+                        push!(
+                            time,
+                            json!({
+                                "type": "goal/change",
+                                "data": {"kind": "goal/change", "version": 1, "operation": "create",
+                                         "goal": {"id": uuid7(time, "dsh-goal"), "revision": 1,
+                                                  "objective": data.get("objective").cloned().unwrap_or(Value::Null),
+                                                  "phase": "active", "maxGoalRounds": 40}}
+                            })
+                        );
                     }
                     _ => {} // unknown meta: skip
                 },
@@ -475,22 +505,4 @@ impl super::Provider for DshProvider {
             extra: json!({"note": "written as plain JSONL (dsh stores zstd); the harness reads both", "events": out.len()}),
         })
     }
-}
-
-fn block_texts(blocks: Option<&Value>) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(arr) = blocks.and_then(|b| b.as_array()) {
-        for b in arr {
-            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(s) = b.get("text").and_then(|t| t.as_str()) {
-                    out.push(s.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
-fn join_text(parts: &[String]) -> String {
-    parts.iter().filter(|p| !p.trim().is_empty()).cloned().collect::<Vec<_>>().join("\n\n")
 }

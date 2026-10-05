@@ -20,18 +20,31 @@ impl ClaudeProvider {
     }
 
     fn custom_title(&self, slug: &str, id: &str) -> Option<String> {
-        let p = self.claude_home.join("projects").join(slug).join(id).join("custom-title.json");
+        let p = self
+            .claude_home
+            .join("projects")
+            .join(slug)
+            .join(id)
+            .join("custom-title.json");
         let txt = std::fs::read_to_string(p).ok()?;
         let v: Value = serde_json::from_str(&txt).ok()?;
-        v.get("customTitle").and_then(|t| t.as_str()).map(str::to_string)
+        v.get("customTitle")
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
     }
 
     fn parse_ts(ts: &str) -> Option<i64> {
-        chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp_millis())
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .map(|d| d.timestamp_millis())
     }
 }
 
 impl super::Provider for ClaudeProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn name(&self) -> &'static str {
         "claude"
     }
@@ -46,7 +59,11 @@ impl super::Provider for ClaudeProvider {
             for f in std::fs::read_dir(slug_dir.path())?.filter_map(|e| e.ok()) {
                 let p = f.path();
                 if p.extension().map(|e| e == "jsonl").unwrap_or(false) {
-                    let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                    let id = p
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string();
                     let slug_name = slug_dir.file_name().to_string_lossy().to_string();
                     let title = self.custom_title(&slug_name, &id);
                     let md = f.metadata().ok();
@@ -56,10 +73,11 @@ impl super::Provider for ClaudeProvider {
                         title,
                         cwd: None,
                         created_ms: None,
-                        updated_ms: md
-                            .as_ref()
-                            .and_then(|m| m.modified().ok())
-                            .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)),
+                        updated_ms: md.as_ref().and_then(|m| m.modified().ok()).map(|t| {
+                            t.duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0)
+                        }),
                         locator: p.to_string_lossy().to_string(),
                         migrated: false,
                     });
@@ -78,16 +96,29 @@ impl super::Provider for ClaudeProvider {
         let mut updated_ms = 0i64;
 
         for ln in text.lines() {
-            let Ok(o) = serde_json::from_str::<Value>(ln) else { continue };
-            let typ = o.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
-            let ts = o.get("timestamp").and_then(|t| t.as_str()).and_then(Self::parse_ts);
+            let Ok(o) = serde_json::from_str::<Value>(ln) else {
+                continue;
+            };
+            let typ = o
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let ts = o
+                .get("timestamp")
+                .and_then(|t| t.as_str())
+                .and_then(Self::parse_ts);
             if let Some(t) = ts {
                 created_ms = created_ms.min(t);
                 updated_ms = updated_ms.max(t);
             }
             match typ.as_str() {
                 "ai-title" => {
-                    title = o.get("aiTitle").and_then(|t| t.as_str()).map(str::to_string).or(title);
+                    title = o
+                        .get("aiTitle")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string)
+                        .or(title);
                 }
                 "user" | "assistant" => {
                     if cwd.is_none() {
@@ -98,11 +129,18 @@ impl super::Provider for ClaudeProvider {
                     match content {
                         Value::String(s) => {
                             if !s.trim().is_empty() {
-                                evs.push(Event::at(ts, EventKind::Message {
-                                    role: if typ == "user" { Role::User } else { Role::Assistant },
-                                    text: s,
-                                    source_kind: None,
-                                }));
+                                evs.push(Event::at(
+                                    ts,
+                                    EventKind::Message {
+                                        role: if typ == "user" {
+                                            Role::User
+                                        } else {
+                                            Role::Assistant
+                                        },
+                                        text: s,
+                                        source_kind: None,
+                                    },
+                                ));
                             }
                         }
                         Value::Array(blocks) => {
@@ -110,27 +148,58 @@ impl super::Provider for ClaudeProvider {
                                 let btype = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                 match (typ.as_str(), btype) {
                                     (_, "text") => {
-                                        let s = b.get("text").and_then(|t| t.as_str()).unwrap_or_default();
+                                        let s = b
+                                            .get("text")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or_default();
                                         if !s.trim().is_empty() {
-                                            evs.push(Event::at(ts, EventKind::Message {
-                                                role: if typ == "user" { Role::User } else { Role::Assistant },
-                                                text: s.to_string(),
-                                                source_kind: None,
-                                            }));
+                                            evs.push(Event::at(
+                                                ts,
+                                                EventKind::Message {
+                                                    role: if typ == "user" {
+                                                        Role::User
+                                                    } else {
+                                                        Role::Assistant
+                                                    },
+                                                    text: s.to_string(),
+                                                    source_kind: None,
+                                                },
+                                            ));
                                         }
                                     }
                                     ("assistant", "thinking") => {
-                                        let s = b.get("thinking").and_then(|t| t.as_str()).unwrap_or_default();
+                                        let s = b
+                                            .get("thinking")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or_default();
                                         if !s.trim().is_empty() {
-                                            evs.push(Event::at(ts, EventKind::Reasoning { text: s.to_string() }));
+                                            evs.push(Event::at(
+                                                ts,
+                                                EventKind::Reasoning {
+                                                    text: s.to_string(),
+                                                },
+                                            ));
                                         }
                                     }
                                     ("assistant", "tool_use") => {
-                                        evs.push(Event::at(ts, EventKind::ToolCall {
-                                            call_id: b.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_string(),
-                                            name: b.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string(),
-                                            arguments: serde_json::to_string(b.get("input").unwrap_or(&json!({})))?,
-                                        }));
+                                        evs.push(Event::at(
+                                            ts,
+                                            EventKind::ToolCall {
+                                                call_id: b
+                                                    .get("id")
+                                                    .and_then(|i| i.as_str())
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                name: b
+                                                    .get("name")
+                                                    .and_then(|n| n.as_str())
+                                                    .unwrap_or("unknown")
+                                                    .to_string(),
+                                                arguments: serde_json::to_string(
+                                                    b.get("input").unwrap_or(&json!({})),
+                                                )?,
+                                            },
+                                        ));
                                     }
                                     ("user", "tool_result") => {
                                         let out = match b.get("content") {
@@ -138,16 +207,27 @@ impl super::Provider for ClaudeProvider {
                                             Some(Value::Array(blocks)) => {
                                                 let parts: Vec<String> = blocks
                                                     .iter()
-                                                    .filter_map(|bb| bb.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                                                    .filter_map(|bb| {
+                                                        bb.get("text")
+                                                            .and_then(|t| t.as_str())
+                                                            .map(str::to_string)
+                                                    })
                                                     .collect();
                                                 parts.join("\n\n")
                                             }
                                             _ => String::new(),
                                         };
-                                        evs.push(Event::at(ts, EventKind::ToolResult {
-                                            call_id: b.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or_default().to_string(),
-                                            text: out,
-                                        }));
+                                        evs.push(Event::at(
+                                            ts,
+                                            EventKind::ToolResult {
+                                                call_id: b
+                                                    .get("tool_use_id")
+                                                    .and_then(|i| i.as_str())
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                text: out,
+                                            },
+                                        ));
                                     }
                                     _ => {}
                                 }
@@ -174,12 +254,20 @@ impl super::Provider for ClaudeProvider {
             created_ms,
             updated_ms,
             events: evs,
+            resume_events: None,
         })
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
-        let cwd = opts.cwd.clone().or_else(|| s.cwd.clone()).unwrap_or_default();
-        let session_id = uuid7(s.created_ms, &format!("harness-bridge/v1|{}|{}", s.source, s.id));
+        let cwd = opts
+            .cwd
+            .clone()
+            .or_else(|| s.cwd.clone())
+            .unwrap_or_default();
+        let session_id = uuid7(
+            s.created_ms,
+            &format!("harness-bridge/v1|{}|{}", s.source, s.id),
+        );
         let slug = claude_slug(&cwd);
         let path = self
             .claude_home
@@ -192,11 +280,11 @@ impl super::Provider for ClaudeProvider {
         let mut offset: i64 = 0;
 
         let push = |records: &mut Vec<Value>,
-                        parent: &mut Option<String>,
-                        typ: &str,
-                        ts_ms: i64,
-                        message: Value,
-                        extra: Value| {
+                    parent: &mut Option<String>,
+                    typ: &str,
+                    ts_ms: i64,
+                    message: Value,
+                    extra: Value| {
             let uuid = uuid7(ts_ms, &format!("claude|{}|{}", s.id, records.len()));
             let mut rec = json!({
                 "parentUuid": parent.clone(),
@@ -220,51 +308,93 @@ impl super::Provider for ClaudeProvider {
             records.push(rec);
         };
 
-        let mut tool_calls: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+        let mut tool_calls: std::collections::HashMap<String, (String, i64)> =
+            std::collections::HashMap::new();
         for e in &s.events {
             let ts = s.event_ms(e, offset);
             offset += 1;
             match &e.kind {
-                EventKind::Message { role, text, source_kind } => match role {
+                EventKind::Message {
+                    role,
+                    text,
+                    source_kind,
+                } => match role {
                     Role::User => {
-                        push(&mut records, &mut parent_uuid, "user", ts,
+                        push(
+                            &mut records,
+                            &mut parent_uuid,
+                            "user",
+                            ts,
                             json!({"role": "user", "content": text}),
-                            json!({"userType": "external", "sourceKind": source_kind}));
+                            json!({"userType": "external", "sourceKind": source_kind}),
+                        );
                     }
                     Role::Assistant => {
-                        push(&mut records, &mut parent_uuid, "assistant", ts,
+                        push(
+                            &mut records,
+                            &mut parent_uuid,
+                            "assistant",
+                            ts,
                             json!({"role": "assistant", "content": [{"type": "text", "text": text}], "model": "imported"}),
-                            json!({}));
+                            json!({}),
+                        );
                     }
                     // Claude Code has no developer channel; context notes stay in the IR
                     // and are dropped here (documented lossy conversion).
                     Role::Developer => {}
                 },
                 EventKind::Reasoning { text } => {
-                    push(&mut records, &mut parent_uuid, "assistant", ts,
+                    push(
+                        &mut records,
+                        &mut parent_uuid,
+                        "assistant",
+                        ts,
                         json!({"role": "assistant", "content": [{"type": "thinking", "thinking": text, "signature": ""}], "model": "imported"}),
-                        json!({}));
+                        json!({}),
+                    );
                 }
-                EventKind::ToolCall { call_id, name, arguments } => {
+                EventKind::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
                     let input: Value = serde_json::from_str(arguments)
                         .unwrap_or_else(|_| json!({"raw": arguments}));
                     tool_calls.insert(call_id.clone(), (name.clone(), ts));
-                    push(&mut records, &mut parent_uuid, "assistant", ts,
+                    push(
+                        &mut records,
+                        &mut parent_uuid,
+                        "assistant",
+                        ts,
                         json!({"role": "assistant", "content": [{"type": "tool_use", "id": call_id, "name": name, "input": input}], "model": "imported"}),
-                        json!({}));
+                        json!({}),
+                    );
                 }
                 EventKind::ToolResult { call_id, text } => {
-                    let (name, _t) = tool_calls.get(call_id).cloned().unwrap_or_else(|| ("imported".into(), ts));
+                    let (name, _t) = tool_calls
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| ("imported".into(), ts));
                     let _ = name;
-                    push(&mut records, &mut parent_uuid, "user", ts,
+                    push(
+                        &mut records,
+                        &mut parent_uuid,
+                        "user",
+                        ts,
                         json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": text}]}),
-                        json!({}));
+                        json!({}),
+                    );
                 }
                 EventKind::Compaction { id: _, text } => {
                     if let Some(t) = text {
-                        push(&mut records, &mut parent_uuid, "user", ts,
+                        push(
+                            &mut records,
+                            &mut parent_uuid,
+                            "user",
+                            ts,
                             json!({"role": "user", "content": format!("[compacted context]\n\n{t}")}),
-                            json!({}));
+                            json!({}),
+                        );
                     }
                 }
                 EventKind::TurnStart | EventKind::TurnEnd { .. } => {}
@@ -317,7 +447,15 @@ impl super::Provider for ClaudeProvider {
 fn turns_count(s: &Session) -> i64 {
     s.events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Message { role: Role::User, .. }))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                EventKind::Message {
+                    role: Role::User,
+                    ..
+                }
+            )
+        })
         .count() as i64
 }
 
@@ -342,7 +480,8 @@ impl ClaudeProvider {
                 for p in pkgs.filter_map(|e| e.ok()) {
                     let name = p.file_name().to_string_lossy().to_string();
                     if name.starts_with("Claude") {
-                        let root = p.path()
+                        let root = p
+                            .path()
                             .join("LocalCache")
                             .join("Roaming")
                             .join("Claude")
@@ -400,7 +539,9 @@ impl ClaudeProvider {
                     if count > 0 {
                         let better = match &best {
                             None => true,
-                            Some((_, bc, bm)) => (cwd_match && !(*bm)) || (cwd_match == *bm && count > *bc),
+                            Some((_, bc, bm)) => {
+                                (cwd_match && !(*bm)) || (cwd_match == *bm && count > *bc)
+                            }
                         };
                         if better {
                             best = Some((inst_path, count, cwd_match));

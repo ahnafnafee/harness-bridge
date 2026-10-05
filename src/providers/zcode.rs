@@ -31,6 +31,10 @@ impl ZcodeProvider {
 }
 
 impl super::Provider for ZcodeProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn name(&self) -> &'static str {
         "zcode"
     }
@@ -89,21 +93,43 @@ impl super::Provider for ZcodeProvider {
             let (mraw, praw) = row?;
             let m = data_json(&mraw);
             let p = data_json(&praw);
-            let msg_role = m.get("role").and_then(|r| r.as_str()).unwrap_or("assistant").to_string();
+            let msg_role = m
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("assistant")
+                .to_string();
             match p.get("type").and_then(|t| t.as_str()) {
                 Some("text") => {
-                    let text = p.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                    let text = p
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     if !text.trim().is_empty() {
                         let ts = p.pointer("/time/start").and_then(|t| t.as_i64());
-                        evs.push(Event::at(ts, EventKind::Message {
-                            role: if msg_role == "user" { Role::User } else { Role::Assistant },
-                            text,
-                            source_kind: m.pointer("/semantics/kind").and_then(|k| k.as_str()).map(str::to_string),
-                        }));
+                        evs.push(Event::at(
+                            ts,
+                            EventKind::Message {
+                                role: if msg_role == "user" {
+                                    Role::User
+                                } else {
+                                    Role::Assistant
+                                },
+                                text,
+                                source_kind: m
+                                    .pointer("/semantics/kind")
+                                    .and_then(|k| k.as_str())
+                                    .map(str::to_string),
+                            },
+                        ));
                     }
                 }
                 Some("reasoning") => {
-                    let text = p.get("text").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                    let text = p
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     if !text.trim().is_empty() {
                         evs.push(Event::at(
                             p.pointer("/time/start").and_then(|t| t.as_i64()),
@@ -112,16 +138,30 @@ impl super::Provider for ZcodeProvider {
                     }
                 }
                 Some("tool") => {
-                    let call_id = p.get("callID").and_then(|c| c.as_str()).unwrap_or_default().to_string();
-                    let name = p.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown").to_string();
+                    let call_id = p
+                        .get("callID")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = p
+                        .get("tool")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
                     let input = p.pointer("/state/input").cloned().unwrap_or(json!({}));
                     let ts = p.pointer("/state/time/start").and_then(|t| t.as_i64());
-                    evs.push(Event::at(ts, EventKind::ToolCall {
-                        call_id: call_id.clone(),
-                        name,
-                        arguments: serde_json::to_string(&input)?,
-                    }));
-                    let status = p.pointer("/state/status").and_then(|s| s.as_str()).unwrap_or("");
+                    evs.push(Event::at(
+                        ts,
+                        EventKind::ToolCall {
+                            call_id: call_id.clone(),
+                            name,
+                            arguments: serde_json::to_string(&input)?,
+                        },
+                    ));
+                    let status = p
+                        .pointer("/state/status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
                     if matches!(status, "completed" | "error") {
                         let out = p.pointer("/state/output").cloned().unwrap_or(json!(""));
                         let text = match out {
@@ -135,10 +175,16 @@ impl super::Provider for ZcodeProvider {
                     }
                 }
                 Some("compaction") => {
-                    evs.push(Event::at(None, EventKind::Compaction {
-                        id: p.get("id").and_then(|i| i.as_str()).map(str::to_string),
-                        text: p.get("summary").and_then(|s| s.as_str()).map(str::to_string),
-                    }));
+                    evs.push(Event::at(
+                        None,
+                        EventKind::Compaction {
+                            id: p.get("id").and_then(|i| i.as_str()).map(str::to_string),
+                            text: p
+                                .get("summary")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string),
+                        },
+                    ));
                 }
                 _ => {} // step-start / step-finish / file / timeline
             }
@@ -155,24 +201,45 @@ impl super::Provider for ZcodeProvider {
             created_ms: created,
             updated_ms: updated,
             events: evs,
+            resume_events: None,
         })
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
-        let cwd = opts.cwd.clone().or_else(|| s.cwd.clone()).unwrap_or_default();
-        let session_id = format!("sess_{}", uuid7(s.created_ms, &format!("harness-bridge/v1|{}|{}", s.source, s.id)));
+        let cwd = opts
+            .cwd
+            .clone()
+            .or_else(|| s.cwd.clone())
+            .unwrap_or_default();
+        let session_id = format!(
+            "sess_{}",
+            uuid7(
+                s.created_ms,
+                &format!("harness-bridge/v1|{}|{}", s.source, s.id)
+            )
+        );
         let title = opts
             .name
             .clone()
             .or_else(|| s.title.clone())
-            .unwrap_or_else(|| s.first_user_text().map(|t| t.lines().next().unwrap_or_default().to_string()).unwrap_or_default());
+            .unwrap_or_else(|| {
+                s.first_user_text()
+                    .map(|t| t.lines().next().unwrap_or_default().to_string())
+                    .unwrap_or_default()
+            });
 
         if !opts.dry_run {
             let con = Connection::open(&self.db_path)?;
             con.busy_timeout(std::time::Duration::from_secs(10))?;
             // clear any previous import of this session so re-runs never leave stale rows
-            con.execute("delete from part where session_id = ?1", rusqlite::params![session_id])?;
-            con.execute("delete from message where session_id = ?1", rusqlite::params![session_id])?;
+            con.execute(
+                "delete from part where session_id = ?1",
+                rusqlite::params![session_id],
+            )?;
+            con.execute(
+                "delete from message where session_id = ?1",
+                rusqlite::params![session_id],
+            )?;
             con.execute(
                 "insert or replace into session (id, project_id, slug, directory, path, title, version, permission,
                     time_created, time_updated, task_type, title_source)
@@ -213,14 +280,18 @@ impl super::Provider for ZcodeProvider {
             let mut part_seq: i64 = 0;
             let mut offset: i64 = 0;
             let insert_message = |con: &Connection,
-                                      msg_seq: &mut i64,
-                                      part_seq: &mut i64,
-                                      role: &str,
-                                      semantics: Value,
-                                      ts: i64,
-                                      parts: Vec<Value>|
+                                  msg_seq: &mut i64,
+                                  part_seq: &mut i64,
+                                  role: &str,
+                                  semantics: Value,
+                                  ts: i64,
+                                  parts: Vec<Value>|
              -> anyhow::Result<()> {
-                let msg_id = format!("msg_{}_{}", ts, uuid7(ts, &format!("zcode-msg|{}|{}", s.id, *msg_seq)));
+                let msg_id = format!(
+                    "msg_{}_{}",
+                    ts,
+                    uuid7(ts, &format!("zcode-msg|{}|{}", s.id, *msg_seq))
+                );
                 let mut data = json!({
                     "role": role,
                     "time": {"created": ts, "completed": ts},
@@ -242,7 +313,11 @@ impl super::Provider for ZcodeProvider {
                 )?;
                 *msg_seq += 1;
                 for part in parts {
-                    let part_id = format!("part_{}_{}", ts, uuid7(ts, &format!("zcode-part|{}|{}", s.id, *part_seq)));
+                    let part_id = format!(
+                        "part_{}_{}",
+                        ts,
+                        uuid7(ts, &format!("zcode-part|{}|{}", s.id, *part_seq))
+                    );
                     con.execute(
                         "insert or replace into part (id, message_id, session_id, time_created, time_updated, data, sequence)
                          values (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
@@ -264,21 +339,50 @@ impl super::Provider for ZcodeProvider {
                             // harness-context notes render as system timeline events
                             Role::Developer => ("assistant", sem_timeline.clone()),
                         };
-                        let part = json!({"type": "text", "text": text, "time": {"start": ts, "end": ts}});
-                        insert_message(&con, &mut msg_seq, &mut part_seq, zrole, semantics, ts, vec![part])?;
+                        let part =
+                            json!({"type": "text", "text": text, "time": {"start": ts, "end": ts}});
+                        insert_message(
+                            &con,
+                            &mut msg_seq,
+                            &mut part_seq,
+                            zrole,
+                            semantics,
+                            ts,
+                            vec![part],
+                        )?;
                     }
                     EventKind::Reasoning { text } => {
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_asst.clone(), ts, vec![json!({
-                            "type": "reasoning", "text": text, "time": {"start": ts, "end": ts}
-                        })])?;
+                        insert_message(
+                            &con,
+                            &mut msg_seq,
+                            &mut part_seq,
+                            "assistant",
+                            sem_asst.clone(),
+                            ts,
+                            vec![json!({
+                                "type": "reasoning", "text": text, "time": {"start": ts, "end": ts}
+                            })],
+                        )?;
                     }
-                    EventKind::ToolCall { call_id, name, arguments } => {
+                    EventKind::ToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                    } => {
                         let input: Value = serde_json::from_str(arguments)
                             .unwrap_or_else(|_| json!({"raw": arguments}));
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_asst.clone(), ts, vec![json!({
-                            "type": "tool", "callID": call_id, "tool": name,
-                            "state": {"status": "running", "input": input, "time": {"start": ts}}
-                        })])?;
+                        insert_message(
+                            &con,
+                            &mut msg_seq,
+                            &mut part_seq,
+                            "assistant",
+                            sem_asst.clone(),
+                            ts,
+                            vec![json!({
+                                "type": "tool", "callID": call_id, "tool": name,
+                                "state": {"status": "running", "input": input, "time": {"start": ts}}
+                            })],
+                        )?;
                     }
                     EventKind::ToolResult { call_id, text } => {
                         // attach the result to the pending tool part
@@ -299,9 +403,17 @@ impl super::Provider for ZcodeProvider {
                         }
                     }
                     EventKind::Compaction { id, text } => {
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_timeline.clone(), ts, vec![json!({
-                            "type": "compaction", "id": id, "summary": text
-                        })])?;
+                        insert_message(
+                            &con,
+                            &mut msg_seq,
+                            &mut part_seq,
+                            "assistant",
+                            sem_timeline.clone(),
+                            ts,
+                            vec![json!({
+                                "type": "compaction", "id": id, "summary": text
+                            })],
+                        )?;
                     }
                     EventKind::TurnStart | EventKind::TurnEnd { .. } | EventKind::Meta { .. } => {}
                 }

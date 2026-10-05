@@ -59,7 +59,12 @@ jobs:
             tar czf "$name.tar.gz" "$dir"
             asset="$name.tar.gz"
           fi
-          sha256sum "$asset" > "checksums-$TARGET.txt"
+          # macOS has no sha256sum; shasum -a 256 produces the same format
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "checksums-$TARGET.txt"
+          else
+            shasum -a 256 "$asset" > "checksums-$TARGET.txt"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

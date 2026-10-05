@@ -105,18 +105,22 @@ pub fn claude_slug(cwd: &str) -> String {
     cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
-/// ZCode project id: `proj_` + lowercased path, chars outside [a-z0-9.-] become '-'.
+/// ZCode project id, derived empirically from 115 real rows:
+/// lowercase; keep [a-z0-9.]; drop `:` `(` `)`; map every other char to '-';
+/// truncate to 85 chars total. E.g. `F:\Miscellaneous\GitHub\mod-smali`
+/// -> `proj_f-miscellaneous-github-mod-smali`.
 pub fn zcode_project_id(cwd: &str) -> String {
-    let lower = cwd.to_lowercase();
     let mut out = String::from("proj_");
-    for c in lower.chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-' {
+    for c in cwd.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() || c == '.' {
             out.push(c);
+        } else if c == ':' || c == '(' || c == ')' {
+            // dropped entirely
         } else {
             out.push('-');
         }
     }
-    out
+    out.chars().take(85).collect()
 }
 
 /// `\\?\` extended-length prefix used by Codex Desktop path columns.
@@ -125,5 +129,55 @@ pub fn extended_path(p: &str) -> String {
         p.to_string()
     } else {
         format!("\\\\?\\{}", p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression anchor: the id the original warlock-crack migration produced.
+    #[test]
+    fn uuid7_is_deterministic_and_v7() {
+        let id = uuid7(1791094479365, "warlock-crack");
+        assert_eq!(id, "01a1058c-da05-7479-b073-19ea73b67c9f");
+        assert_eq!(&id[14..15], "7"); // version 7
+        assert!(b"89ab".contains(&id.as_bytes()[19]), "variant bits, got {}", &id[19..20]);
+        assert_eq!(uuid7(1791094479365, "warlock-crack"), id);
+        assert_ne!(uuid7(1791094479365, "other"), id);
+    }
+
+    #[test]
+    fn iso_ms_formats_utc_millis() {
+        assert_eq!(iso_ms(1791094479365), "2026-10-04T06:14:39.365Z");
+    }
+
+    #[test]
+    fn claude_slug_replaces_everything_non_alnum() {
+        assert_eq!(claude_slug("D:\\GitHub\\mod-smali"), "D--GitHub-mod-smali");
+        assert_eq!(claude_slug("/home/u/my repo"), "-home-u-my-repo");
+    }
+
+    #[test]
+    fn zcode_project_id_matches_real_rows() {
+        assert_eq!(
+            zcode_project_id("F:\\Miscellaneous\\GitHub\\mod-smali"),
+            "proj_f-miscellaneous-github-mod-smali"
+        );
+        assert_eq!(zcode_project_id("D:\\Games\\Half-Life - Alyx"), "proj_d-games-half-life---alyx");
+        assert_eq!(
+            zcode_project_id("D:\\GitHub\\mod-smali\\briteconnect\\.worktrees"),
+            "proj_d-github-mod-smali-briteconnect-.worktrees"
+        );
+        // colons and parens drop, spaces map 1:1, cap at 85 chars
+        let long = zcode_project_id("E:\\OneDrive\\OneDrive - George Mason University - O365 Production\\Courses\\3. Fall 2026\\CS584");
+        assert_eq!(long.len(), 85);
+        assert!(long.ends_with("-fall-"));
+    }
+
+    #[test]
+    fn extended_path_is_idempotent() {
+        assert_eq!(extended_path("C:\\x"), "\\\\?\\C:\\x");
+        assert_eq!(extended_path("\\\\?\\C:\\x"), "\\\\?\\C:\\x");
     }
 }

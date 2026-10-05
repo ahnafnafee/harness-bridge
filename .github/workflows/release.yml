@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          name="harness-bridge-${VERSION}-${TARGET}"
+          dir="$name"
+          mkdir -p "$dir"
+          bin="target/$TARGET/release/harness-bridge"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then bin="$bin.exe"; fi
+          cp "$bin" "$dir/"
+          cp README.md LICENSE AGENTS.md "$dir/"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell.exe -NoProfile -Command "Compress-Archive -Path '$dir' -DestinationPath '$name.zip' -Force"
+            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$name.tar.gz" "$dir"
+            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+          sha256sum "$ASSET" > "checksums-$TARGET.txt"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            harness-bridge-*
+            checksums-*.txt
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums and write release notes
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cat dist/checksums-*.txt | sort -k2 > sha256sums.txt
+          rm dist/checksums-*.txt
+          {
+            echo "## harness-bridge $VERSION"
+            echo
+            echo "Migrate coding-agent sessions between harnesses: **DeepSeek Harness (dsh), Codex Desktop, Claude Code, ZCode, agy**."
+            echo "One normalized session model; tool calls, reasoning and timestamps survive the trip."
+            echo
+            echo "### 📥 Downloads"
+            echo
+            echo "| Archive | Platform | Arch |"
+            echo "|---|---|---|"
+            echo "| \`harness-bridge-$VERSION-x86_64-pc-windows-msvc.zip\` | Windows | x64 |"
+            echo "| \`harness-bridge-$VERSION-x86_64-unknown-linux-gnu.tar.gz\` | Linux | x64 |"
+            echo "| \`harness-bridge-$VERSION-aarch64-apple-darwin.tar.gz\` | macOS | Apple Silicon |"
+            echo
+            echo "### 🚀 Install (put it on PATH)"
+            echo
+            echo "1. Download the archive for your platform and extract it."
+            echo "2. Put the \`harness-bridge\` binary somewhere on your \`PATH\` — e.g. \`~/.local/bin\` (Linux/macOS),"
+            echo "   or a folder like \`C:\\Users\\<you>\\bin\` added to \`PATH\` (Windows)."
+            echo "3. \`harness-bridge list\` should print the sessions it found."
+            echo
+            echo "Or with cargo: \`cargo install --git https://github.com/ahnafnafee/harness-bridge --tag $VERSION\`"
+            echo
+            echo "### ✅ Verify"
+            echo
+            echo 'SHA-256 checksums are in `sha256sums.txt` (attached). Verify with `sha256sum -c sha256sums.txt`.'
+            echo
+            echo "### 📝 Notes"
+            echo
+            echo "- Windows builds are the first-class, battle-tested target; Linux/macOS builds are provided"
+            echo "  best-effort (paths default to \$HOME and were not exercised against real harness stores)."
+            echo "- The bundled \`AGENTS.md\` contains ready-made instructions so AI agents can run conversions for you."
+            echo
+            echo "### 🔧 What changed"
+          } > NOTES.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: NOTES.md
+          generate_release_notes: true
+          files: |
+            dist/harness-bridge-*
+            sha256sums.txt

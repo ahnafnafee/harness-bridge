@@ -9,7 +9,8 @@ DeepSeek Harness · Codex Desktop · Claude Code · ZCode · agy
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)](#)
-[![Status](https://img.shields.io/badge/status-beta-orange)](#fidelity)
+[![Release](https://img.shields.io/github/v/release/ahnafnafee/harness-bridge)](https://github.com/ahnafnafee/harness-bridge/releases/latest)
+[![CI](https://github.com/ahnafnafee/harness-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ahnafnafee/harness-bridge/actions/workflows/ci.yml)
 
 </div>
 

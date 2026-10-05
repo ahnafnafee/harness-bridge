@@ -54,12 +54,12 @@ jobs:
           cp README.md LICENSE AGENTS.md "$dir/"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             powershell.exe -NoProfile -Command "Compress-Archive -Path '$dir' -DestinationPath '$name.zip' -Force"
-            echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+            asset="$name.zip"
           else
             tar czf "$name.tar.gz" "$dir"
-            echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+            asset="$name.tar.gz"
           fi
-          sha256sum "$ASSET" > "checksums-$TARGET.txt"
+          sha256sum "$asset" > "checksums-$TARGET.txt"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

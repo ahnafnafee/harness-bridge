@@ -271,22 +271,175 @@ impl super::Provider for ClaudeProvider {
                 EventKind::Meta { .. } => {}
             }
         }
-        if let Some(title) = opts.name.clone().or_else(|| s.title.clone()) {
-            records.push(json!({
-                "type": "ai-title", "aiTitle": title, "sessionId": session_id,
-            }));
-        }
+        let title = opts
+            .name
+            .clone()
+            .or_else(|| s.title.clone())
+            .unwrap_or_else(|| {
+                s.first_user_text()
+                    .map(|t| t.lines().next().unwrap_or_default().to_string())
+                    .unwrap_or_default()
+            });
+        records.push(json!({
+            "type": "ai-title", "aiTitle": title, "sessionId": session_id,
+        }));
 
         if !opts.dry_run {
             std::fs::create_dir_all(path.parent().unwrap())?;
             let body: Vec<String> = records.iter().map(|r| r.to_string()).collect();
             std::fs::write(&path, body.join("\n") + "\n")?;
+            // CLI title sidecar (the resume picker reads this too)
+            let sidecar = path.parent().unwrap().join(&session_id);
+            std::fs::create_dir_all(&sidecar).ok();
+            std::fs::write(
+                sidecar.join("custom-title.json"),
+                json!({"customTitle": title}).to_string(),
+            )
+            .ok();
         }
+        let registered_desktop = if opts.dry_run {
+            false
+        } else {
+            self.register_desktop_entry(&path, &session_id, &title, &cwd, s)
+                .unwrap_or(false)
+        };
+
         Ok(WriteOutcome {
             provider: "claude".into(),
             location: path.to_string_lossy().to_string(),
             native_id: session_id,
-            extra: json!({"records": records.len(), "slug": slug, "dry_run": opts.dry_run}),
+            extra: json!({"records": records.len(), "slug": slug, "dry_run": opts.dry_run,
+                          "registered_in_desktop": registered_desktop}),
         })
+    }
+}
+
+fn turns_count(s: &Session) -> i64 {
+    s.events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::Message { role: Role::User, .. }))
+        .count() as i64
+}
+
+impl ClaudeProvider {
+    /// The Claude Desktop app does not scan `~/.claude/projects` — it keeps its own
+    /// registry under
+    /// `%LOCALAPPDATA%/Packages/Claude_*/LocalCache/Roaming/Claude/claude-code-sessions/
+    /// <workspace>/<instance>/local_<uuid>.json`, binding UI sessions to CLI session
+    /// files via `cliSessionId`. Register the new session there so it shows up.
+    fn register_desktop_entry(
+        &self,
+        _cli_path: &Path,
+        session_id: &str,
+        title: &str,
+        cwd: &str,
+        s: &Session,
+    ) -> anyhow::Result<bool> {
+        let mut registry_roots: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = std::path::PathBuf::from(local);
+            if let Ok(pkgs) = std::fs::read_dir(local.join("Packages")) {
+                for p in pkgs.filter_map(|e| e.ok()) {
+                    let name = p.file_name().to_string_lossy().to_string();
+                    if name.starts_with("Claude") {
+                        let root = p.path()
+                            .join("LocalCache")
+                            .join("Roaming")
+                            .join("Claude")
+                            .join("claude-code-sessions");
+                        if root.is_dir() {
+                            registry_roots.push(root);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let root = std::path::PathBuf::from(appdata)
+                .join("Claude")
+                .join("claude-code-sessions");
+            if root.is_dir() {
+                registry_roots.push(root);
+            }
+        }
+        if registry_roots.is_empty() {
+            return Ok(false);
+        }
+
+        // pick the instance dir holding the most registry entries; prefer one that
+        // already contains sessions for this cwd
+        let mut best: Option<(std::path::PathBuf, usize, bool)> = None;
+        for root in &registry_roots {
+            for ws in std::fs::read_dir(root)?.filter_map(|e| e.ok()) {
+                let ws_path = ws.path();
+                if !ws_path.is_dir() {
+                    continue;
+                }
+                for inst in std::fs::read_dir(&ws_path)?.filter_map(|e| e.ok()) {
+                    let inst_path = inst.path();
+                    if !inst_path.is_dir() {
+                        continue;
+                    }
+                    let mut count = 0usize;
+                    let mut cwd_match = false;
+                    for f in std::fs::read_dir(&inst_path)?.filter_map(|e| e.ok()) {
+                        let fname = f.file_name().to_string_lossy().to_string();
+                        if fname.starts_with("local_") && fname.ends_with(".json") {
+                            count += 1;
+                            if !cwd_match {
+                                if let Ok(o) = serde_json::from_str::<Value>(
+                                    &std::fs::read_to_string(f.path()).unwrap_or_default(),
+                                ) {
+                                    if o.get("cwd").and_then(|c| c.as_str()) == Some(cwd) {
+                                        cwd_match = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if count > 0 {
+                        let better = match &best {
+                            None => true,
+                            Some((_, bc, bm)) => (cwd_match && !(*bm)) || (cwd_match == *bm && count > *bc),
+                        };
+                        if better {
+                            best = Some((inst_path, count, cwd_match));
+                        }
+                    }
+                }
+            }
+        }
+        let Some(inst_dir) = best.map(|(p, _, _)| p) else {
+            return Ok(false);
+        };
+
+        let local_uuid = crate::util::uuid7(s.created_ms, &format!("claude-desktop|{}", s.id));
+        let entry = json!({
+            "sessionId": format!("local_{local_uuid}"),
+            "cliSessionId": session_id,
+            "cwd": cwd,
+            "originCwd": cwd,
+            "lastFocusedAt": s.updated_ms,
+            "createdAt": s.created_ms,
+            "lastActivityAt": s.updated_ms,
+            "model": "claude-opus-5-5",
+            "effort": "xhigh",
+            "effortInherited": true,
+            "isArchived": false,
+            "title": title,
+            "titleSource": "auto",
+            "permissionMode": "auto",
+            "chromePermissionMode": "skip_all_permission_checks",
+            "completedTurns": turns_count(s),
+            "alwaysAllowedReasons": [],
+            "sessionPermissionUpdates": [],
+            "remoteMcpServersConfig": [],
+        });
+        std::fs::create_dir_all(&inst_dir)?;
+        std::fs::write(
+            inst_dir.join(format!("local_{local_uuid}.json")),
+            entry.to_string(),
+        )?;
+        Ok(true)
     }
 }

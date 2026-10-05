@@ -170,10 +170,13 @@ impl super::Provider for ZcodeProvider {
         if !opts.dry_run {
             let con = Connection::open(&self.db_path)?;
             con.busy_timeout(std::time::Duration::from_secs(10))?;
+            // clear any previous import of this session so re-runs never leave stale rows
+            con.execute("delete from part where session_id = ?1", rusqlite::params![session_id])?;
+            con.execute("delete from message where session_id = ?1", rusqlite::params![session_id])?;
             con.execute(
-                "insert or replace into session (id, project_id, slug, directory, title, version, permission,
+                "insert or replace into session (id, project_id, slug, directory, path, title, version, permission,
                     time_created, time_updated, task_type, title_source)
-                 values (?1, ?2, ?1, ?3, ?4, '0.16.9', '{\"mode\":\"yolo\"}', ?5, ?6, 'interactive', 'first_input')",
+                 values (?1, ?2, ?1, ?3, ?3, ?4, '0.16.9', '{\"mode\":\"yolo\"}', ?5, ?6, 'interactive', 'first_input')",
                 rusqlite::params![
                     session_id,
                     zcode_project_id(&cwd),
@@ -183,6 +186,28 @@ impl super::Provider for ZcodeProvider {
                     s.updated_ms,
                 ],
             )?;
+            // runtime entries native sessions carry (execution state + model selection)
+            con.execute(
+                "insert or replace into session_entry (id, session_id, type, time_created, time_updated, data)
+                 values (?1, ?2, 'runtime/execution_state', ?3, ?3, ?4)",
+                rusqlite::params![
+                    format!("{session_id}:runtime-execution-state"),
+                    session_id,
+                    s.updated_ms,
+                    json!({"mode": "yolo", "planEnabled": false}).to_string()
+                ],
+            )?;
+
+            // semantics native rows carry; the desktop renderer filters on uiVisibility
+            let sem_user = json!({"origin": "real_user", "kind": "user_prompt",
+                                  "uiVisibility": "visible", "providerVisibility": "visible",
+                                  "transcriptVisibility": "visible"});
+            let sem_asst = json!({"origin": "agent_runtime", "kind": "assistant_response",
+                                  "uiVisibility": "visible", "providerVisibility": "visible",
+                                  "transcriptVisibility": "visible"});
+            let sem_timeline = json!({"origin": "system", "kind": "timeline_event",
+                                      "uiVisibility": "visible", "providerVisibility": "hidden",
+                                      "transcriptVisibility": "visible"});
 
             let mut msg_seq: i64 = 0;
             let mut part_seq: i64 = 0;
@@ -191,16 +216,25 @@ impl super::Provider for ZcodeProvider {
                                       msg_seq: &mut i64,
                                       part_seq: &mut i64,
                                       role: &str,
+                                      semantics: Value,
                                       ts: i64,
                                       parts: Vec<Value>|
              -> anyhow::Result<()> {
                 let msg_id = format!("msg_{}_{}", ts, uuid7(ts, &format!("zcode-msg|{}|{}", s.id, *msg_seq)));
-                let data = json!({
+                let mut data = json!({
                     "role": role,
-                    "time": {"created": ts},
-                    "agent": "harness-bridge",
-                    "semantics": {"origin": "imported", "kind": format!("imported_{}", role)},
+                    "time": {"created": ts, "completed": ts},
+                    "agent": "zcode-agent",
+                    "semantics": semantics,
+                    "path": {"cwd": cwd, "root": cwd},
+                    "mode": "yolo",
+                    "planEnabled": false,
                 });
+                if role == "assistant" {
+                    data["cost"] = json!(0);
+                    data["tokens"] = json!({"input": 0, "output": 0, "reasoning": 0,
+                                            "cache": {"read": 0, "write": 0}});
+                }
                 con.execute(
                     "insert or replace into message (id, session_id, time_created, time_updated, data, sequence)
                      values (?1, ?2, ?3, ?3, ?4, ?5)",
@@ -224,26 +258,24 @@ impl super::Provider for ZcodeProvider {
                 offset += 1;
                 match &e.kind {
                     EventKind::Message { role, text, .. } => {
-                        let zrole = match role {
-                            Role::User => "user",
-                            Role::Assistant | Role::Developer => "assistant",
+                        let (zrole, semantics) = match role {
+                            Role::User => ("user", sem_user.clone()),
+                            Role::Assistant => ("assistant", sem_asst.clone()),
+                            // harness-context notes render as system timeline events
+                            Role::Developer => ("assistant", sem_timeline.clone()),
                         };
-                        let part = if role == &Role::Developer {
-                            json!({"type": "text", "text": format!("[context] {text}"), "time": {"start": ts, "end": ts}})
-                        } else {
-                            json!({"type": "text", "text": text, "time": {"start": ts, "end": ts}})
-                        };
-                        insert_message(&con, &mut msg_seq, &mut part_seq, zrole, ts, vec![part])?;
+                        let part = json!({"type": "text", "text": text, "time": {"start": ts, "end": ts}});
+                        insert_message(&con, &mut msg_seq, &mut part_seq, zrole, semantics, ts, vec![part])?;
                     }
                     EventKind::Reasoning { text } => {
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", ts, vec![json!({
+                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_asst.clone(), ts, vec![json!({
                             "type": "reasoning", "text": text, "time": {"start": ts, "end": ts}
                         })])?;
                     }
                     EventKind::ToolCall { call_id, name, arguments } => {
                         let input: Value = serde_json::from_str(arguments)
                             .unwrap_or_else(|_| json!({"raw": arguments}));
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", ts, vec![json!({
+                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_asst.clone(), ts, vec![json!({
                             "type": "tool", "callID": call_id, "tool": name,
                             "state": {"status": "running", "input": input, "time": {"start": ts}}
                         })])?;
@@ -267,7 +299,7 @@ impl super::Provider for ZcodeProvider {
                         }
                     }
                     EventKind::Compaction { id, text } => {
-                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", ts, vec![json!({
+                        insert_message(&con, &mut msg_seq, &mut part_seq, "assistant", sem_timeline.clone(), ts, vec![json!({
                             "type": "compaction", "id": id, "summary": text
                         })])?;
                     }

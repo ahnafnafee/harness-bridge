@@ -1,6 +1,6 @@
 [package]
 name = "harness-bridge"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Migrate coding-agent sessions between harnesses: DeepSeek Harness (dsh), Codex Desktop, Claude Code, ZCode, agy"
 license = "MIT"

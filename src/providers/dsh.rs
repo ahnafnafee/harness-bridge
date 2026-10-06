@@ -200,6 +200,14 @@ impl DshProvider {
                                 *val = json!(name);
                             }
                         }
+                        // surface the port at the top of the recency-sorted sidebar:
+                        // its original lastPromptAt is days old and buries it
+                        if let Some(val) = v.pointer_mut("/record/rows/sessionListMetadata/val") {
+                            val["lastPromptAt"] = json!(std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0));
+                        }
                         // subagent-born transcripts carry isSeeded/inheritedEventCount;
                         // the desktop hides subagent-classified sessions from the sidebar,
                         // so the wrapper must present as top-level

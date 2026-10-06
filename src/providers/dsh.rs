@@ -158,6 +158,73 @@ impl DshProvider {
                 }
             }
 
+            // desktop wrapper: the desktop app's sidebar lists only `session-<uuid>`
+            // registry sessions (workspace.json tables.workspaces[].sessionIds + a
+            // prefixed projcache + a transcript dir of the same name). Create all
+            // three so the port shows up without hand-editing. The wrapper's
+            // transcript header is rewritten to native desktop shape (top-level,
+            // no parent linkage).
+            let desktop_uuid = uuid7(created_ms, &format!("dsh-port-desktop|{}|{}", src.id, target_preset));
+            let desktop_id = format!("session-{desktop_uuid}");
+            let mut desktop_header = header.clone();
+            desktop_header["id"] = json!(desktop_id);
+            desktop_header["isSeeded"] = json!(false);
+            desktop_header["delegationDepth"] = json!(0);
+            if let Some(obj) = desktop_header.as_object_mut() {
+                obj.remove("parentSession");
+                obj.remove("origin");
+            }
+            let mut desktop_out = vec![desktop_header.to_string()];
+            desktop_out.extend(out.iter().skip(1).cloned());
+            let dst_desktop_dir = project_dir.join(&desktop_id);
+            std::fs::create_dir_all(&dst_desktop_dir)?;
+            let desktop_compressed = zstd::stream::encode_all(desktop_out.join("\n").as_bytes(), 3)?;
+            std::fs::write(dst_desktop_dir.join("session.v4.jsonl.zstd"), &desktop_compressed)?;
+            for name in [
+                format!("{}.json", src.id),
+                format!("session-{}.json", src.id),
+            ] {
+                let p = proj_dir.join(&name);
+                if let Ok(txt) = std::fs::read_to_string(&p) {
+                    if let Ok(mut v) = serde_json::from_str::<Value>(&txt) {
+                        if let Some(val) = v.pointer_mut("/record/rows/agentPreset/val") {
+                            *val = json!(target_preset);
+                        }
+                        let dst_proj = proj_dir.join(format!("{desktop_id}.json"));
+                        std::fs::write(&dst_proj, serde_json::to_string_pretty(&v)?)?;
+                        break;
+                    }
+                }
+            }
+            let ws_path = self.dsh_home.join("storages").join("workspace.json");
+            let mut registered_ws = false;
+            if let Ok(txt) = std::fs::read_to_string(&ws_path) {
+                if let Ok(mut ws) = serde_json::from_str::<Value>(&txt) {
+                    let cwd_str = header.get("cwd").and_then(|c| c.as_str()).unwrap_or_default();
+                    let ws_list = ws.pointer_mut("/tables/workspaces").and_then(|w| w.as_object_mut());
+                    if let Some(workspaces) = ws_list {
+                        let entry = workspaces
+                            .values_mut()
+                            .find(|v| v.get("path").and_then(|p| p.as_str()) == Some(cwd_str));
+                        if let Some(entry) = entry {
+                            if let Some(ids) = entry.get_mut("sessionIds").and_then(|s| s.as_array_mut()) {
+                                if !ids.iter().any(|i| i.as_str() == Some(desktop_id.as_str())) {
+                                    ids.push(json!(desktop_id));
+                                }
+                                registered_ws = true;
+                            }
+                        }
+                    }
+                    if registered_ws {
+                        let bak = ws_path.with_extension("json.bak-harness-bridge");
+                        if !bak.exists() {
+                            let _ = std::fs::copy(&ws_path, &bak);
+                        }
+                        let _ = std::fs::write(&ws_path, serde_json::to_string(&ws)?);
+                    }
+                }
+            }
+
             Ok(WriteOutcome {
                 provider: "dsh".into(),
                 location: dst.to_string_lossy().to_string(),
@@ -165,7 +232,9 @@ impl DshProvider {
                 extra: json!({
                     "preset": target_preset,
                     "events": out.len(),
-                    "note": "raw transcript copy with header agentPreset rewritten; projcache cloned with agentPreset row patched",
+                    "desktop_session_id": desktop_id,
+                    "registered_in_desktop": registered_ws,
+                    "note": "raw transcript copy with header agentPreset rewritten; projcache cloned; desktop wrapper registered in workspace.json (restart the dsh desktop to see it)",
                 }),
             })
         } else {

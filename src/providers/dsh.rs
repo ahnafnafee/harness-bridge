@@ -151,6 +151,11 @@ impl DshProvider {
                         if let Some(val) = v.pointer_mut("/record/rows/agentPreset/val") {
                             *val = json!(target_preset);
                         }
+                        if let Some(name) = &opts.name {
+                            if let Some(val) = v.pointer_mut("/record/rows/title/val") {
+                                *val = json!(name);
+                            }
+                        }
                         let dst_proj = proj_dir.join(format!("{new_id}.json"));
                         std::fs::write(&dst_proj, serde_json::to_string_pretty(&v)?)?;
                         break;
@@ -189,6 +194,11 @@ impl DshProvider {
                     if let Ok(mut v) = serde_json::from_str::<Value>(&txt) {
                         if let Some(val) = v.pointer_mut("/record/rows/agentPreset/val") {
                             *val = json!(target_preset);
+                        }
+                        if let Some(name) = &opts.name {
+                            if let Some(val) = v.pointer_mut("/record/rows/title/val") {
+                                *val = json!(name);
+                            }
                         }
                         let dst_proj = proj_dir.join(format!("{desktop_id}.json"));
                         std::fs::write(&dst_proj, serde_json::to_string_pretty(&v)?)?;

@@ -200,6 +200,13 @@ impl DshProvider {
                                 *val = json!(name);
                             }
                         }
+                        // subagent-born transcripts carry isSeeded/inheritedEventCount;
+                        // the desktop hides subagent-classified sessions from the sidebar,
+                        // so the wrapper must present as top-level
+                        if let Some(identity) = v.pointer_mut("/record/identity") {
+                            identity["isSeeded"] = json!(false);
+                            identity["inheritedEventCount"] = json!(0);
+                        }
                         let dst_proj = proj_dir.join(format!("{desktop_id}.json"));
                         std::fs::write(&dst_proj, serde_json::to_string_pretty(&v)?)?;
                         break;

@@ -6,7 +6,7 @@ Instructions for AI coding agents (Claude Code, Codex, ZCode, dsh subagents, …
 ## What this tool is
 
 `harness-bridge` converts coding-agent session transcripts between harnesses:
-`dsh` (DeepSeek Harness) ↔ `codex` (Codex Desktop/CLI) ↔ `claude` (Claude Code) ↔ `zcode` ↔ `agy` (read-only).
+`dsh` (DeepSeek Harness) ↔ `codex` (Codex Desktop/CLI) ↔ `claude` (Claude Code) ↔ `zcode` ↔ `agy` (text-turn writes).
 It reads the source, converts through a normalized model, and writes a native session the target
 harness can list and resume. Nothing in the source is modified.
 
@@ -29,7 +29,10 @@ harness-bridge migrate <query> --from dsh --to codex --cwd "F:\\target\\dir" --n
 harness-bridge migrate <query> --dry-run              # full conversion, nothing written
 ```
 
-All flags: `--cwd` (target base directory), `--name` (display title), `--dry-run`, plus home overrides
+Conversion flags: `--cwd` (target base directory), `--name` (display title), `--dry-run`,
+`--resume-max-chars` (normalized context character budget, default 750,000),
+`--prune-resume-context` (explicit output shortening with the archive preserved),
+`--include-subagents` (saved children with translated parent links), plus home overrides
 `--dsh-home`, `--codex-home`, `--claude-home`, `--zcode-db`, `--agy-dir` (use these for testing against
 throwaway homes; see Testing below).
 
@@ -43,8 +46,9 @@ throwaway homes; see Testing below).
 3. **Ask about `--cwd` when it matters.** The default target cwd is the *source* session's original working
    directory. If the user wants the new thread "based" elsewhere (common for Codex), pass `--cwd`. Explain that
    `--cwd` changes only the new session's base directory — history content and file paths are never rewritten.
-4. **Re-runs are safe.** A ledger (`~/.codex/dsh-imports.json`) maps source session → target thread, and writes
-   are deterministic (same source → same target id). Re-running updates in place; it never duplicates.
+4. **Re-runs update in place.** A ledger (`~/.codex/dsh-imports.json`) maps source session → target thread, and writes
+   are deterministic (same source → same target id). Re-running can overwrite turns added in the destination;
+   preserve that destination copy before reimporting.
 5. **Report outcomes faithfully.** After a real write, tell the user: the target location, the native id, and
    any caveats below that apply.
 
@@ -71,9 +75,13 @@ The port is idempotent: same source + preset -> same new session id.
 - **agy writes are text-turn native**: harness-bridge rebuilds the conversation db (steps table, summaries index,
   brain transcripts) from a template conversation. Tool calls/results are not yet representable in agy's protobuf
   steps and are omitted. Content that trips Google's safety filters may still be blocked when agy generates responses.
-- **Timestamps, tool call/result pairing, reasoning and compaction summaries are preserved** across all
-  read/write paths; per-provider renderings differ (e.g. reasoning becomes Codex `reasoning` items,
-  Claude `thinking` blocks).
+- **Resume preflight** applies across providers. Character budgets are not model token limits; smaller models
+  may need a lower budget. Incomplete or unsupported checkpoints fail explicitly. Raw DSH preset copies retain
+  their existing context semantics and do not use normalized context pruning.
+- **Saved child links** use native destination fields where supported; agy uses the migration archive and ZCode
+  uses a migration entry on schemas without `parent_id`. These imports do not start agents or translate tools.
+- **Reasoning** is retained in the normalized archive. Active foreign reasoning in Claude writes becomes plain
+  assistant text because a foreign thinking signature cannot be replayed. agy's native steps remain text-only.
 
 ## Testing pattern (when something looks wrong)
 

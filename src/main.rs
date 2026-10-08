@@ -1,6 +1,8 @@
 mod cli;
+mod family;
 mod ir;
 mod providers;
+mod resume;
 mod util;
 
 fn main() {

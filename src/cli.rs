@@ -62,6 +62,15 @@ enum Command {
         /// Convert without writing to the target harness.
         #[arg(long)]
         dry_run: bool,
+        /// Preflight character budget for retained context (not a model token limit).
+        #[arg(long, default_value_t = crate::resume::DEFAULT_MAX_CHARS)]
+        resume_max_chars: usize,
+        /// Shorten reasoning/tool outputs in resume context; preserve the full archive.
+        #[arg(long)]
+        prune_resume_context: bool,
+        /// Import saved child sessions recursively and remap their parent links.
+        #[arg(long)]
+        include_subagents: bool,
     },
 }
 
@@ -166,6 +175,9 @@ pub fn run() -> anyhow::Result<()> {
             name,
             preset,
             dry_run,
+            resume_max_chars,
+            prune_resume_context,
+            include_subagents,
         } => {
             if from == to && from != "dsh" {
                 anyhow::bail!("--from and --to must differ (dsh -> dsh is allowed with --preset)");
@@ -181,11 +193,17 @@ pub fn run() -> anyhow::Result<()> {
             let r = resolve(&refs, &query)?;
 
             if from == "dsh" && to == "dsh" {
+                anyhow::ensure!(!include_subagents && !prune_resume_context && resume_max_chars == crate::resume::DEFAULT_MAX_CHARS,
+                    "DSH preset copies preserve the raw transcript; context-budget/pruning and --include-subagents apply to cross-harness migration, not --preset");
                 let dsh = src
                     .as_any()
                     .downcast_ref::<providers::dsh::DshProvider>()
                     .ok_or_else(|| anyhow::anyhow!("internal: dsh provider downcast failed"))?;
-                println!("porting dsh session {} to preset {} ...", r.id, preset.as_deref().unwrap_or("?"));
+                println!(
+                    "porting dsh session {} to preset {} ...",
+                    r.id,
+                    preset.as_deref().unwrap_or("?")
+                );
                 let opts = ir::WriteOpts { cwd, name, dry_run };
                 let outcome = dsh.port_preset(&r, preset.as_deref().unwrap(), &opts)?;
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -194,15 +212,16 @@ pub fn run() -> anyhow::Result<()> {
 
             let dst = providers::provider_named(&to, &homes)?;
             println!("reading {} session {} ...", r.provider, r.id);
-            let session = src.read(&r)?;
-            println!(
-                "  {} events, cwd {:?}, title {:?}",
-                session.events.len(),
-                session.cwd,
-                session.title
-            );
             let opts = ir::WriteOpts { cwd, name, dry_run };
-            let outcome = dst.write(&session, &opts)?;
+            let outcome = crate::family::migrate(
+                src.as_ref(),
+                dst.as_ref(),
+                r,
+                &opts,
+                include_subagents,
+                resume_max_chars,
+                prune_resume_context,
+            )?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
             Ok(())
         }

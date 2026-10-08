@@ -8,6 +8,8 @@
 | :-- | :-- |
 | `src/main.rs` | Entry point and error reporting. |
 | `src/cli.rs` | Command parsing, query resolution, and migration orchestration. |
+| `src/family.rs` | Family discovery, translated parent ids, whole-family conversion preflight and writes. |
+| `src/resume.rs` | Shared context-size preflight and explicit output pruning. |
 | `src/ir.rs` | Sessions, events, discovery references, and write options/results. |
 | `src/util.rs` | Shared paths, ids, timestamps, compression, and format helpers. |
 | `src/providers/mod.rs` | Provider interface, construction, import ledger, and git metadata. |
@@ -15,6 +17,7 @@
 | `src/providers/dsh/context.rs` | DSH archive decoding and ordered model-context replay. |
 | `src/providers/codex.rs` | Codex discovery, reading, and rollout/turn assembly. |
 | `src/providers/codex/response.rs` | Native response-item encoding shared by the transcript and resume checkpoint. |
+| `src/providers/{claude,codex,zcode}/context.rs` | Source-native checkpoint reconstruction. |
 | `src/providers/codex/registry.rs` | Desktop sidebar, SQLite thread registration, and ledger updates. |
 | `src/providers/codex/tests.rs` | DSH-to-Codex conversion regression coverage. |
 | `src/providers/{claude,zcode,agy}.rs` | Other providers' native formats and registration. |
@@ -26,7 +29,9 @@
 
 DSH replacement bounds refer to positions in the current context surface. A newer summary can precede an older retained message, so sorting or deleting by numeric sequence range is incorrect. Replay the operations in log order, splice between the referenced positions, and restore tool calls for surviving results. Invalid or unsupported operations fail conversion rather than silently replaying superseded history.
 
-Codex encodes retained events into a native `compacted.payload.replacement_history`. The visible rollout still contains the full converted archive. Tests cover summaries, pruned outputs, reordered sequence bounds, retained call/result pairs, invalid operations, and legacy transcripts without surface metadata.
+Claude's latest boundary retains its summary, declared preserved records, and later messages. Codex reads plaintext replacement histories; opaque checkpoints fail explicitly. ZCode respects persisted summaries and provider visibility. Codex exports retained events into a native `compacted.payload.replacement_history`, while the visible rollout still contains the full converted archive. Other writers use their native checkpoint/visibility mechanisms; agy uses retained text turns plus a separate normalized archive.
+
+The shared size policy checks serialized normalized event characters before writing. Pruning is opt-in, preserves protected text and tool arguments, and never changes the archive. It is not a token estimate. Family tests cover nested parent links, deterministic reimports, native Codex registration, both ZCode parent schemas, and preflight failures leaving the destination unwritten. Temporary Claude homes must never register sessions in the user's real desktop sidebar.
 
 ## Local validation
 

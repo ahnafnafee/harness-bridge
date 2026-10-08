@@ -12,6 +12,7 @@ use crate::util::{iso_ms, read_maybe_zstd, uuid7};
 use serde_json::{json, Map, Value};
 use std::path::Path;
 
+mod context;
 mod registry;
 mod response;
 #[cfg(test)]
@@ -252,6 +253,13 @@ impl super::Provider for CodexProvider {
                 .to_string();
             let p = o.get("payload").cloned().unwrap_or(Value::Null);
             match typ.as_str() {
+                "compacted" => evs.push(Event::at(
+                    ts,
+                    EventKind::Compaction {
+                        id: None,
+                        text: p.get("message").and_then(Value::as_str).map(str::to_string),
+                    },
+                )),
                 "response_item" => match p.get("type").and_then(|t| t.as_str()) {
                     Some("message") => {
                         let role = match p.get("role").and_then(|r| r.as_str()) {
@@ -403,8 +411,24 @@ impl super::Provider for CodexProvider {
             created_ms,
             updated_ms,
             events: evs,
-            resume_events: None,
+            resume_events: context::resume_events(&text)?,
         })
+    }
+
+    fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        Ok(self
+            .discover()?
+            .into_iter()
+            .filter(|r| {
+                glob::read_first_line(Path::new(&r.locator))
+                    .and_then(|ln| serde_json::from_str::<Value>(&ln).ok())
+                    .is_some_and(|o| {
+                        o.pointer("/payload/parent_thread_id")
+                            .and_then(Value::as_str)
+                            == Some(parent.id.as_str())
+                    })
+            })
+            .collect())
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
@@ -454,7 +478,7 @@ impl super::Provider for CodexProvider {
                     .unwrap_or_default()
             });
 
-        let meta_payload = json!({
+        let mut meta_payload = json!({
             "creator_user_id": ref_meta.get("creator_user_id").cloned().unwrap_or(Value::Null),
             "creator_account_id": ref_meta.get("creator_account_id").cloned().unwrap_or(Value::Null),
             "session_id": thread_id,
@@ -472,6 +496,22 @@ impl super::Provider for CodexProvider {
             "context_window": {"window_id": window_id},
             "git": crate::providers::git_info(&new_cwd),
         });
+        if let Some(parent) = &s.parent_session {
+            let depth = s
+                .events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::Meta { kind, data } if kind == "migration-parent-depth" => {
+                        data["depth"].as_u64()
+                    }
+                    _ => None,
+                })
+                .unwrap_or(1);
+            meta_payload["parent_thread_id"] = json!(parent);
+            meta_payload["thread_source"] = json!("subagent");
+            meta_payload["source"] =
+                json!({"subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":depth}}});
+        }
 
         let mut out: Vec<Map<String, Value>> = Vec::new();
         macro_rules! emit {

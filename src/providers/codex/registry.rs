@@ -120,7 +120,10 @@ impl CodexProvider {
                 ("updated_at_ms", json!(last_ms)),
                 ("recency_at", json!(last_ms / 1000)),
                 ("recency_at_ms", json!(last_ms)),
-                ("source", json!("vscode")),
+                (
+                    "source",
+                    meta.get("source").cloned().unwrap_or(json!("vscode")),
+                ),
                 (
                     "model_provider",
                     meta.get("model_provider")
@@ -169,7 +172,10 @@ impl CodexProvider {
                     "reasoning_effort",
                     effort.map(Value::String).unwrap_or(Value::Null),
                 ),
-                ("thread_source", json!("user")),
+                (
+                    "thread_source",
+                    meta.get("thread_source").cloned().unwrap_or(json!("user")),
+                ),
                 (
                     "git_sha",
                     git.get("commit_hash").cloned().unwrap_or(Value::Null),
@@ -218,7 +224,14 @@ impl CodexProvider {
             }
             let params: Vec<rusqlite::types::Value> = row.values().map(to_sql).collect();
             let con = rusqlite::Connection::open(&db)?;
+            con.busy_timeout(std::time::Duration::from_secs(10))?;
             con.execute(&q, rusqlite::params_from_iter(params))?;
+            if let Some(parent) = meta.get("parent_thread_id").and_then(Value::as_str) {
+                let has_edges:bool = con.query_row("select exists(select 1 from sqlite_master where type='table' and name='thread_spawn_edges')",[],|r|r.get(0))?;
+                if has_edges {
+                    con.execute("insert or replace into thread_spawn_edges(parent_thread_id,child_thread_id,status) values(?1,?2,'closed')",rusqlite::params![parent,thread_id])?;
+                }
+            }
             con.close().ok();
         }
 

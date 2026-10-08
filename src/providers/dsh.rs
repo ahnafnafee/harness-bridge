@@ -4,7 +4,7 @@
 //! transcripts and writes the same format back (plain JSONL; dsh stores them
 //! zstd-compressed but the event schema is identical).
 
-use crate::ir::{EventKind, Role, Session, SessionRef, WriteOpts, WriteOutcome};
+use crate::ir::{Event, EventKind, Role, Session, SessionRef, WriteOpts, WriteOutcome};
 use crate::util::{read_maybe_zstd, uuid7};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -169,7 +169,10 @@ impl DshProvider {
             // three so the port shows up without hand-editing. The wrapper's
             // transcript header is rewritten to native desktop shape (top-level,
             // no parent linkage).
-            let desktop_uuid = uuid7(created_ms, &format!("dsh-port-desktop|{}|{}", src.id, target_preset));
+            let desktop_uuid = uuid7(
+                created_ms,
+                &format!("dsh-port-desktop|{}|{}", src.id, target_preset),
+            );
             let desktop_id = format!("session-{desktop_uuid}");
             let mut desktop_header = header.clone();
             desktop_header["id"] = json!(desktop_id);
@@ -183,8 +186,12 @@ impl DshProvider {
             desktop_out.extend(out.iter().skip(1).cloned());
             let dst_desktop_dir = project_dir.join(&desktop_id);
             std::fs::create_dir_all(&dst_desktop_dir)?;
-            let desktop_compressed = zstd::stream::encode_all(desktop_out.join("\n").as_bytes(), 3)?;
-            std::fs::write(dst_desktop_dir.join("session.v4.jsonl.zstd"), &desktop_compressed)?;
+            let desktop_compressed =
+                zstd::stream::encode_all(desktop_out.join("\n").as_bytes(), 3)?;
+            std::fs::write(
+                dst_desktop_dir.join("session.v4.jsonl.zstd"),
+                &desktop_compressed,
+            )?;
             for name in [
                 format!("{}.json", src.id),
                 format!("session-{}.json", src.id),
@@ -225,14 +232,21 @@ impl DshProvider {
             let mut registered_ws = false;
             if let Ok(txt) = std::fs::read_to_string(&ws_path) {
                 if let Ok(mut ws) = serde_json::from_str::<Value>(&txt) {
-                    let cwd_str = header.get("cwd").and_then(|c| c.as_str()).unwrap_or_default();
-                    let ws_list = ws.pointer_mut("/tables/workspaces").and_then(|w| w.as_object_mut());
+                    let cwd_str = header
+                        .get("cwd")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or_default();
+                    let ws_list = ws
+                        .pointer_mut("/tables/workspaces")
+                        .and_then(|w| w.as_object_mut());
                     if let Some(workspaces) = ws_list {
                         let entry = workspaces
                             .values_mut()
                             .find(|v| v.get("path").and_then(|p| p.as_str()) == Some(cwd_str));
                         if let Some(entry) = entry {
-                            if let Some(ids) = entry.get_mut("sessionIds").and_then(|s| s.as_array_mut()) {
+                            if let Some(ids) =
+                                entry.get_mut("sessionIds").and_then(|s| s.as_array_mut())
+                            {
                                 if !ids.iter().any(|i| i.as_str() == Some(desktop_id.as_str())) {
                                     ids.push(json!(desktop_id));
                                 }
@@ -354,6 +368,8 @@ impl super::Provider for DshProvider {
 
         let (evs, title) = decode_events(&events);
         let resume_events = replay_surface(&events)?.map(|surface| decode_events(&surface).0);
+        anyhow::ensure!(resume_events.is_some() || !evs.iter().any(|e| matches!(e.kind, EventKind::Compaction { .. })),
+            "compacted DSH transcript has no authoritative surface operations; refusing to replay superseded history");
 
         Ok(Session {
             source: "dsh".into(),
@@ -380,6 +396,23 @@ impl super::Provider for DshProvider {
             events: evs,
             resume_events,
         })
+    }
+
+    fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        let mut children = Vec::new();
+        for r in self.discover()? {
+            let text = read_maybe_zstd(Path::new(&r.locator))?;
+            if let Some(header) = text
+                .lines()
+                .next()
+                .and_then(|ln| serde_json::from_str::<Value>(ln).ok())
+            {
+                if header.get("parentSession").and_then(Value::as_str) == Some(parent.id.as_str()) {
+                    children.push(r);
+                }
+            }
+        }
+        Ok(children)
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
@@ -414,12 +447,25 @@ impl super::Provider for DshProvider {
         let mut out = vec![header.to_string()];
         let mut seq: i64 = 0;
         let mut turn: i64 = 0;
-        let mut offset: i64 = 0;
         let mut pending_reasoning: Option<(i64, String)> = None; // (time, text)
 
         macro_rules! push {
             ($time:expr, $obj:expr) => {{
                 let mut o = $obj;
+                if o.get("surfaceOp").is_none()
+                    && matches!(
+                        o["type"].as_str(),
+                        Some(
+                            "user/message"
+                                | "assistant/message"
+                                | "developer/message"
+                                | "system/message"
+                                | "tool/result"
+                        )
+                    )
+                {
+                    o["surfaceOp"] = json!("append");
+                }
                 o["seq"] = json!(seq);
                 o["time"] = json!($time);
                 seq += 1;
@@ -427,9 +473,39 @@ impl super::Provider for DshProvider {
             }};
         }
 
-        for e in &s.events {
-            let time = s.event_ms(e, offset);
-            offset += 1;
+        let write_events: Vec<&Event> = s
+            .events
+            .iter()
+            .chain(s.resume_events.iter().flatten())
+            .collect();
+        for (index, e) in write_events.into_iter().enumerate() {
+            if index == s.events.len() && s.resume_events.is_some() {
+                let bounds: Vec<i64> = out
+                    .iter()
+                    .skip(1)
+                    .filter_map(|ln| {
+                        let record: Value = serde_json::from_str(ln).ok()?;
+                        (record.get("surfaceOp").is_some())
+                            .then(|| record["seq"].as_i64())
+                            .flatten()
+                    })
+                    .collect();
+                let operation = match (bounds.first(), bounds.last()) {
+                    (Some(first), Some(last)) => {
+                        json!({"op":"replace", "startSeq":first, "endSeq":last})
+                    }
+                    _ => json!("append"),
+                };
+                pending_reasoning = None;
+                push!(
+                    s.updated_ms,
+                    json!({"type":"user/message", "surfaceOp":operation,
+                    "data":{"role":"user", "id":uuid7(s.updated_ms, "migration-resume"),
+                        "source":{"kind":"compact-checkpoint"},
+                        "content":[{"type":"text", "text":"The retained migration context follows; earlier entries are archival."}]}})
+                );
+            }
+            let time = s.event_ms(e, index as i64);
             match &e.kind {
                 EventKind::TurnStart => {
                     turn += 1;

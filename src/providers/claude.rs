@@ -10,6 +10,10 @@ use crate::util::{claude_slug, uuid7};
 use serde_json::{json, Value};
 use std::path::Path;
 
+mod context;
+#[cfg(test)]
+mod tests;
+
 pub struct ClaudeProvider {
     pub claude_home: std::path::PathBuf,
 }
@@ -94,11 +98,14 @@ impl super::Provider for ClaudeProvider {
         let mut cwd: Option<String> = None;
         let mut created_ms = i64::MAX;
         let mut updated_ms = 0i64;
+        let records: Vec<Value> = text
+            .lines()
+            .filter_map(|ln| serde_json::from_str(ln).ok())
+            .collect();
+        let mut event_ranges = Vec::with_capacity(records.len());
 
-        for ln in text.lines() {
-            let Ok(o) = serde_json::from_str::<Value>(ln) else {
-                continue;
-            };
+        for o in &records {
+            let first_event = evs.len();
             let typ = o
                 .get("type")
                 .and_then(|t| t.as_str())
@@ -113,6 +120,17 @@ impl super::Provider for ClaudeProvider {
                 updated_ms = updated_ms.max(t);
             }
             match typ.as_str() {
+                "system"
+                    if o.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+                {
+                    evs.push(Event::at(
+                        ts,
+                        EventKind::Compaction {
+                            id: o.get("uuid").and_then(Value::as_str).map(str::to_string),
+                            text: None,
+                        },
+                    ));
+                }
                 "ai-title" => {
                     title = o
                         .get("aiTitle")
@@ -127,21 +145,19 @@ impl super::Provider for ClaudeProvider {
                     let msg = o.get("message").cloned().unwrap_or(Value::Null);
                     let content = msg.get("content").cloned().unwrap_or(Value::Null);
                     match content {
-                        Value::String(s) => {
-                            if !s.trim().is_empty() {
-                                evs.push(Event::at(
-                                    ts,
-                                    EventKind::Message {
-                                        role: if typ == "user" {
-                                            Role::User
-                                        } else {
-                                            Role::Assistant
-                                        },
-                                        text: s,
-                                        source_kind: None,
+                        Value::String(s) if !s.trim().is_empty() => {
+                            evs.push(Event::at(
+                                ts,
+                                EventKind::Message {
+                                    role: if typ == "user" {
+                                        Role::User
+                                    } else {
+                                        Role::Assistant
                                     },
-                                ));
-                            }
+                                    text: s,
+                                    source_kind: None,
+                                },
+                            ));
                         }
                         Value::Array(blocks) => {
                             for b in blocks {
@@ -238,24 +254,83 @@ impl super::Provider for ClaudeProvider {
                 }
                 _ => {} // attachments, queue-operations, last-prompt
             }
+            event_ranges.push(first_event..evs.len());
         }
         if created_ms == i64::MAX {
             created_ms = updated_ms;
         }
 
+        let child = Path::new(&r.locator)
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "subagents");
+        let parent_session = if child {
+            records.iter().find_map(|o| {
+                o.get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        } else {
+            None
+        };
+        let resume_events = context::resume_events(&records, &event_ranges, &evs, child)?;
         Ok(Session {
             source: "claude".into(),
             id: r.id.clone(),
             title,
             cwd,
             agent_preset: None,
-            parent_session: None,
+            parent_session,
             origin: None,
             created_ms,
             updated_ms,
             events: evs,
-            resume_events: None,
+            resume_events,
         })
+    }
+
+    fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        let path = Path::new(&parent.locator);
+        let dir = path.with_extension("").join("subagents");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut children = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "jsonl") {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default();
+                children.push(SessionRef {
+                    provider: "claude".into(),
+                    id: std::fs::File::open(&path)
+                        .ok()
+                        .and_then(|file| {
+                            std::io::BufRead::lines(std::io::BufReader::new(file))
+                                .next()?
+                                .ok()
+                        })
+                        .and_then(|line| serde_json::from_str::<Value>(&line).ok())
+                        .and_then(|record| {
+                            record["harnessBridgeSessionId"]
+                                .as_str()
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| format!("{}/{name}", parent.id)),
+                    title: Some(name.into()),
+                    cwd: parent.cwd.clone(),
+                    created_ms: None,
+                    updated_ms: None,
+                    locator: path.to_string_lossy().into(),
+                    migrated: false,
+                });
+            }
+        }
+        children.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(children)
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
@@ -269,11 +344,27 @@ impl super::Provider for ClaudeProvider {
             &format!("harness-bridge/v1|{}|{}", s.source, s.id),
         );
         let slug = claude_slug(&cwd);
-        let path = self
-            .claude_home
-            .join("projects")
-            .join(&slug)
-            .join(format!("{session_id}.jsonl"));
+        let project = self.claude_home.join("projects").join(&slug);
+        let path = match &s.parent_session {
+            Some(parent) => {
+                let parent_path = s
+                    .events
+                    .iter()
+                    .find_map(|event| match &event.kind {
+                        EventKind::Meta { kind, data } if kind == "migration-parent-depth" => {
+                            data["location"].as_str()
+                        }
+                        _ => None,
+                    })
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| project.join(format!("{parent}.jsonl")));
+                parent_path
+                    .with_extension("")
+                    .join("subagents")
+                    .join(format!("agent-{session_id}.jsonl"))
+            }
+            None => project.join(format!("{session_id}.jsonl")),
+        };
 
         let mut records: Vec<Value> = Vec::new();
         let mut parent_uuid: Option<String> = None;
@@ -288,13 +379,15 @@ impl super::Provider for ClaudeProvider {
             let uuid = uuid7(ts_ms, &format!("claude|{}|{}", s.id, records.len()));
             let mut rec = json!({
                 "parentUuid": parent.clone(),
-                "isSidechain": false,
+                "isSidechain": s.parent_session.is_some(),
                 "type": typ,
                 "message": message,
                 "uuid": uuid,
                 "timestamp": crate::util::iso_ms(ts_ms),
                 "cwd": cwd,
-                "sessionId": session_id,
+                "sessionId": s.parent_session.as_ref().unwrap_or(&session_id),
+                "agentId": if s.parent_session.is_some() {Some(&session_id)} else {None},
+                "harnessBridgeSessionId": session_id,
                 "version": "2.1.150",
             });
             if let Value::Object(map) = &mut rec {
@@ -310,7 +403,31 @@ impl super::Provider for ClaudeProvider {
 
         let mut tool_calls: std::collections::HashMap<String, (String, i64)> =
             std::collections::HashMap::new();
-        for e in &s.events {
+        let write_events: Vec<&Event> = s
+            .events
+            .iter()
+            .chain(s.resume_events.iter().flatten())
+            .collect();
+        for (index, e) in write_events.into_iter().enumerate() {
+            if index == s.events.len() && s.resume_events.is_some() {
+                push(
+                    &mut records,
+                    &mut parent_uuid,
+                    "system",
+                    s.updated_ms,
+                    Value::Null,
+                    json!({"subtype":"compact_boundary", "parentUuid":null,
+                        "content":"Migration resume checkpoint", "compactMetadata":{"trigger":"manual"}}),
+                );
+                push(
+                    &mut records,
+                    &mut parent_uuid,
+                    "user",
+                    s.updated_ms,
+                    json!({"role":"user", "content":"The retained migration context follows; earlier transcript entries are archival."}),
+                    json!({"isCompactSummary":true}),
+                );
+            }
             let ts = s.event_ms(e, offset);
             offset += 1;
             match &e.kind {
@@ -344,12 +461,17 @@ impl super::Provider for ClaudeProvider {
                     Role::Developer => {}
                 },
                 EventKind::Reasoning { text } => {
+                    let content = if s.resume_events.is_none() || index >= s.events.len() {
+                        json!([{"type":"text", "text":format!("[Imported reasoning]\n{text}")}])
+                    } else {
+                        json!([{"type":"thinking", "thinking":text, "signature":""}])
+                    };
                     push(
                         &mut records,
                         &mut parent_uuid,
                         "assistant",
                         ts,
-                        json!({"role": "assistant", "content": [{"type": "thinking", "thinking": text, "signature": ""}], "model": "imported"}),
+                        json!({"role": "assistant", "content":content, "model": "imported"}),
                         json!({}),
                     );
                 }
@@ -427,7 +549,10 @@ impl super::Provider for ClaudeProvider {
             )
             .ok();
         }
-        let registered_desktop = if opts.dry_run {
+        let registered_desktop = if opts.dry_run
+            || s.parent_session.is_some()
+            || self.claude_home != crate::util::default_claude_home()
+        {
             false
         } else {
             self.register_desktop_entry(&path, &session_id, &title, &cwd, s)

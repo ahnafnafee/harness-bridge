@@ -386,9 +386,9 @@ impl AgyProvider {
             let mut rows = stmt.query(rusqlite::params![id]).ok()?;
             let row = rows.next().ok()??;
             let mut vals = Vec::new();
-            for i in 0..columns.len() {
+            for (i, column) in columns.iter().enumerate() {
                 let v = rusqlite::types::Value::from(row.get_ref(i).ok()?);
-                vals.push((columns[i].clone(), v));
+                vals.push((column.clone(), v));
             }
             Some(vals)
         })();
@@ -669,7 +669,7 @@ impl super::Provider for AgyProvider {
                                 events.push(Event::at(
                                     ts,
                                     EventKind::ToolCall {
-                                        call_id: format!("agy-{}-{i}", r.id),
+                                        call_id: format!("agy-{}-{}-{i}", r.id, events.len()),
                                         name: c
                                             .get("name")
                                             .and_then(|n| n.as_str())
@@ -749,19 +749,70 @@ impl super::Provider for AgyProvider {
             }
         }
 
+        let archive = self
+            .agy_dir
+            .join("brain")
+            .join(&r.id)
+            .join("migration-archive.json");
+        let mut parent_session = None;
+        let resume_events = if archive.exists() {
+            let archived: Session = serde_json::from_str(&std::fs::read_to_string(archive)?)?;
+            parent_session = archived.parent_session.clone();
+            let initial_turns = archived
+                .resume_events
+                .as_ref()
+                .unwrap_or(&archived.events)
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.kind,
+                        EventKind::Message {
+                            role: Role::User | Role::Assistant,
+                            ref text, ..
+                        } if !text.trim().is_empty()
+                    )
+                })
+                .count();
+            let active = events;
+            events = archived.events;
+            events.extend(active.iter().skip(initial_turns).cloned());
+            Some(active)
+        } else {
+            None
+        };
         Ok(Session {
             source: "agy".into(),
             id: r.id.clone(),
             title: r.title.clone(),
             cwd: r.cwd.clone(),
             agent_preset: None,
-            parent_session: None,
+            parent_session,
             origin: Some("agy".into()),
             created_ms,
             updated_ms: updated_ms.max(created_ms),
             events,
-            resume_events: None,
+            resume_events,
         })
+    }
+
+    fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        Ok(self
+            .discover()?
+            .into_iter()
+            .filter(|r| {
+                let path = self
+                    .agy_dir
+                    .join("brain")
+                    .join(&r.id)
+                    .join("migration-archive.json");
+                std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .is_some_and(|o| {
+                        o.get("parent_session").and_then(Value::as_str) == Some(parent.id.as_str())
+                    })
+            })
+            .collect())
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
@@ -783,10 +834,8 @@ impl super::Provider for AgyProvider {
 
         // collect the text turns; tool steps are not representable yet (documented)
         let mut turns: Vec<(i64, Role, String)> = Vec::new(); // (time_ms, role, text)
-        let mut offset: i64 = 0;
-        for e in &s.events {
+        for (offset, e) in (0_i64..).zip(s.resume_events.as_ref().unwrap_or(&s.events)) {
             let ms = s.event_ms(e, offset);
-            offset += 1;
             match &e.kind {
                 EventKind::Message {
                     role: Role::User,
@@ -961,6 +1010,13 @@ impl super::Provider for AgyProvider {
             }
             std::fs::write(logs.join("transcript.jsonl"), &lines)?;
             std::fs::write(logs.join("transcript_full.jsonl"), &lines)?;
+            std::fs::write(
+                self.agy_dir
+                    .join("brain")
+                    .join(&new_id)
+                    .join("migration-archive.json"),
+                serde_json::to_string(s)?,
+            )?;
 
             // 4. title annotation
             let ann = self.agy_dir.join("annotations");
@@ -993,6 +1049,7 @@ impl super::Provider for AgyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::Provider;
 
     fn varint(v: u64) -> Vec<u8> {
         enc_varint(v)
@@ -1050,5 +1107,97 @@ mod tests {
         let mut repl = |_: &str| -> Option<String> { None };
         let out = rewire(&buf, &mut repl).unwrap();
         assert_eq!(out, buf);
+    }
+
+    #[test]
+    fn native_export_retains_context_archive_and_parent_links() {
+        let home = std::env::temp_dir().join(format!(
+            "hb-agy-context-{}",
+            uuid7(chrono::Utc::now().timestamp_millis(), "agy-test")
+        ));
+        let logs = home.join("brain/template/.system_generated/logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(home.join("conversations")).unwrap();
+        let transcript = [
+            json!({"type":"USER_INPUT","content":"template user"}),
+            json!({"type":"PLANNER_RESPONSE","source":"MODEL","content":"template answer"}),
+        ];
+        std::fs::write(
+            logs.join("transcript.jsonl"),
+            transcript
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let provider = AgyProvider::new(home.clone());
+        let index = rusqlite::Connection::open(provider.summaries_db()).unwrap();
+        index.execute_batch("create table conversation_summaries(conversation_id text primary key,title text,last_modified_time text,workspace_uris text,step_count integer);insert into conversation_summaries values('template','Template','2026-10-08 00:00:00+00:00','[]',2);").unwrap();
+        index.close().unwrap();
+        let db = rusqlite::Connection::open(home.join("conversations/template.db")).unwrap();
+        db.execute_batch("create table steps(idx integer,step_type integer,status integer,has_subtrajectory integer,step_payload blob,step_format integer);create table trajectory_meta(trajectory_id text,cascade_id text);insert into trajectory_meta values('trajectory','template');").unwrap();
+        for (i, text) in ["template user", "template answer"].iter().enumerate() {
+            let mut payload = field_tag(1, 2);
+            payload.extend(varint(text.len() as u64));
+            payload.extend(text.as_bytes());
+            db.execute(
+                "insert into steps values(?1,?2,3,0,?3,0)",
+                rusqlite::params![i as i64, 14 + i as i64, payload],
+            )
+            .unwrap();
+        }
+        db.close().unwrap();
+        let message = |text: &str| {
+            Event::at(
+                Some(1_791_417_600_000),
+                EventKind::Message {
+                    role: Role::User,
+                    text: text.into(),
+                    source_kind: None,
+                },
+            )
+        };
+        let mut s = Session {
+            source: "test".into(),
+            id: "source".into(),
+            title: Some("Title".into()),
+            cwd: Some("test".into()),
+            agent_preset: None,
+            parent_session: None,
+            origin: None,
+            created_ms: 1_791_417_600_000,
+            updated_ms: 1_791_417_600_000,
+            events: vec![message("obsolete archive"), message("current task")],
+            resume_events: Some(vec![message("current task")]),
+        };
+        let outcome = provider.write(&s, &WriteOpts::default()).unwrap();
+        let root = SessionRef {
+            provider: "agy".into(),
+            id: outcome.native_id,
+            title: None,
+            cwd: None,
+            created_ms: None,
+            updated_ms: None,
+            locator: String::new(),
+            migrated: false,
+        };
+        let read = provider.read(&root).unwrap();
+        assert!(serde_json::to_string(&read.events)
+            .unwrap()
+            .contains("obsolete archive"));
+        let context = serde_json::to_string(read.resume_events.as_ref().unwrap()).unwrap();
+        assert!(context.contains("current task"));
+        assert!(!context.contains("obsolete archive"));
+        s.id = "child".into();
+        s.parent_session = Some(root.id.clone());
+        provider.write(&s, &WriteOpts::default()).unwrap();
+        let children = provider.children(&root).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(
+            provider.read(&children[0]).unwrap().parent_session,
+            Some(root.id)
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

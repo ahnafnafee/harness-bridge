@@ -265,17 +265,15 @@ pub(super) fn decode_events(events: &[(i64, Value)]) -> (Vec<Event>, Option<Stri
                     ));
                 }
             }
-            "goal/change" => {
-                if d.get("operation").and_then(|o| o.as_str()) == Some("create") {
-                    if let Some(obj) = d.pointer("/goal/objective").and_then(|o| o.as_str()) {
-                        evs.push(Event::at(
-                            Some(*time),
-                            EventKind::Meta {
-                                kind: "goal".into(),
-                                data: json!({"objective": obj}),
-                            },
-                        ));
-                    }
+            "goal/change" if d.get("operation").and_then(|o| o.as_str()) == Some("create") => {
+                if let Some(obj) = d.pointer("/goal/objective").and_then(|o| o.as_str()) {
+                    evs.push(Event::at(
+                        Some(*time),
+                        EventKind::Meta {
+                            kind: "goal".into(),
+                            data: json!({"objective": obj}),
+                        },
+                    ));
                 }
             }
             _ => {} // telemetry: retries, request headers, sandbox modes, titles, ...

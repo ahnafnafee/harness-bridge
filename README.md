@@ -23,7 +23,7 @@
 
 `harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently.
 
-For DSH → Codex migrations, the visible transcript and the context sent to the model are preserved separately. DSH's compaction summaries and pruned outputs become a native Codex resume checkpoint, keeping superseded history out of the next request.
+The visible transcript and the context sent to the model are preserved separately. Supported source checkpoints keep superseded history out of the next request, and an import preflight checks retained context size before writing. Saved child sessions can be imported together with translated parent links.
 
 <details>
 <summary><kbd>Table of contents</kbd></summary>
@@ -34,6 +34,7 @@ For DSH → Codex migrations, the visible transcript and the context sent to the
 - [Options](#options)
 - [How conversion works](#how-conversion-works)
 - [Resuming in Codex](#resuming-in-codex)
+- [Child sessions](#child-sessions)
 - [Common questions](#common-questions)
 - [Development](#development)
 - [License](#license)
@@ -92,9 +93,9 @@ If a query matches several sessions, the command lists their ids and stops. Use 
 | :-- | :--: | :--: | :-- |
 | **dsh** | Yes | Yes | Version 4 JSONL, including multi-frame zstd input. Converted sessions use plain JSONL. |
 | **Codex** | Yes | Yes | Rollout JSONL, desktop sidebar registration, and an import ledger. Writes require an existing top-level Desktop session as a template. |
-| **Claude Code** | Yes | Yes | Project JSONL with thinking, tool-use, and tool-result blocks. Harness instructions are omitted because there is no developer channel. |
+| **Claude Code** | Yes | Yes | Project JSONL with compact boundaries, tool-use, and tool-result blocks. Active foreign reasoning becomes plain text; harness instructions are omitted because there is no developer channel. |
 | **ZCode** | Yes | Yes | SQLite session, message, and part tables. Writes use the destination database. |
-| **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; tool calls and results are omitted. |
+| **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; unsupported tool activity is retained in a separate migration archive. |
 
 Messages, reasoning, tool pairs, timestamps, and stored summaries pass through the shared session model where the target can represent them. Provider-specific telemetry and unsupported records are not guaranteed to survive a round trip. Attachment and media transfer is not implemented.
 
@@ -106,6 +107,9 @@ Messages, reasoning, tool pairs, timestamps, and stored summaries pass through t
 | `--cwd` | Set the destination's base directory; defaults to the source directory. Paths inside messages are left as recorded. |
 | `--name` | Override the destination's display title. |
 | `--dry-run` | Read and convert without writing. Required target templates are still read. |
+| `--resume-max-chars` | Retained-context character budget; defaults to 750,000. This is a preflight limit, not a token count. |
+| `--prune-resume-context` | Explicitly allow shortening reasoning and tool outputs to fit the budget. Preserve the complete normalized archive, prompts, assistant text, tool arguments and call ids. |
+| `--include-subagents` | Import saved children recursively, preflight the entire family, and remap parent links. |
 | `--preset` | Copy a DSH session to an installed directory preset; valid only with `--from dsh --to dsh`. |
 | `--dsh-home`, `--codex-home`, `--claude-home` | Override a provider's home directory, including for isolated validation. |
 | `--zcode-db`, `--agy-dir` | Override ZCode's database or agy's data directory. |
@@ -137,19 +141,41 @@ flowchart LR
     Writer --> Target["Target session store"]
 ```
 
-Every provider implements discovery, reading, and writing. The shared [session model](src/ir.rs) carries the archive and, when available, a separate set of events representing the source's current model context. The destination writer translates those records into native messages and tool items, then performs any registration its app needs.
+Every provider implements discovery, reading, writing, and child discovery. The shared [session model](src/ir.rs) carries the archive and, when available, a separate set of events representing the source's current model context. The destination writer translates those records into native messages and tool items, then performs any registration its app needs. Claude and DSH writes add native context checkpoints; ZCode keeps archival messages visible in the transcript but hidden from the provider. agy writes retained text turns and stores the normalized archive separately in `brain/<id>/migration-archive.json`.
 
 Codex writes also update `session_index.jsonl`, the `threads` table in `state_5.sqlite` when present, and `dsh-imports.json`. This lets the Desktop app find imported chats without relying on its initial rollout backfill.
 
 ## Resuming in Codex
 
-DSH transcripts are append-only: a compacted summary or pruned tool output can replace earlier context while the original records remain in the file. Sending that entire log on resume can exceed the model's context window.
+Source transcripts can retain records from before compaction. Sending that entire log on resume can exceed the model's context window. Claude's latest compact boundary, summary and declared preserved messages, DSH's ordered surface replacements, Codex's plaintext replacement history, and ZCode's persisted summaries are read as retained context.
 
 The DSH reader replays `surfaceOp` replacements in their actual context order and retains the tool calls paired with surviving results. The Codex writer keeps the full converted transcript for display and adds a native `compacted` record containing the retained context. Migration output reports `resume_context_items` and `resume_context_chars` when this metadata is available.
 
-Older DSH transcripts without surface operations use the full-history fallback. The retained context must still fit the selected model; character counts are diagnostic figures, not token counts.
+Compacted DSH transcripts without authoritative surface operations and Codex checkpoints without plaintext replacement history fail with an explanation instead of replaying the archive. Uncompacted sources use their full context and the same size preflight.
+
+When retained context exceeds the budget, compact the source or explicitly allow output pruning:
+
+```sh
+harness-bridge migrate "<id-prefix>" --from claude --to codex --prune-resume-context --include-subagents --dry-run
+```
+
+Pruning retains a notice and the beginning/end of shortened tool outputs; it is not a generated summary. If protected messages or arguments still exceed the budget, the import stops before writing. `--resume-max-chars` can be adjusted for a suitable destination model. Counts describe serialized normalized context, not the destination's exact request or token usage; native instructions, tool catalogs and model limits still affect whether a remote request fits.
 
 After importing or updating a chat, reopen or refresh Codex Desktop so it reloads the rollout and registry. For a chat already loaded in memory, restart the app before resuming.
+
+## Child sessions
+
+`--include-subagents` imports saved child conversations, including nested descendants, and reports their destination ids under `extra.child_sessions`. All members are read and converted in dry-run mode before any actual write. Reimports use deterministic ids. A failure during a later filesystem or registry write can still leave earlier family members written; there is no transaction across separate stores.
+
+| Destination | Parent link |
+| :-- | :-- |
+| Codex | Native parent metadata and historical `thread_spawn_edges` when available. |
+| Claude Code | Native `subagents/agent-<id>.jsonl` under the translated parent path. |
+| DSH | Native `parentSession` header. |
+| ZCode | Native `parent_id` when available; migration entry fallback on older schemas. |
+| agy | Portable parent link in the migration archive; native subtrajectory translation is not implemented. |
+
+These are historical sessions. Importing them does not start agents or translate destination tool commands. Child discovery uses persisted native links for Codex, Claude, DSH and ZCode; for agy it can recover only links recorded by previous bridge imports. Whether children appear in an app's UI depends on that app.
 
 ## Common questions
 

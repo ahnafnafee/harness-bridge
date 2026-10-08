@@ -15,6 +15,11 @@ pub trait Provider {
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome>;
 
+    /// Direct children only; migration traverses the family with cycle checks.
+    fn children(&self, _parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        Ok(Vec::new())
+    }
+
     /// Downcast support (dsh -> dsh preset porting).
     fn as_any(&self) -> &dyn std::any::Any;
 }

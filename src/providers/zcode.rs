@@ -8,6 +8,7 @@ use crate::ir::{Event, EventKind, Role, Session, SessionRef, WriteOpts, WriteOut
 use crate::util::{uuid7, zcode_project_id};
 use rusqlite::Connection;
 use serde_json::{json, Value};
+mod context;
 
 pub struct ZcodeProvider {
     pub db_path: std::path::PathBuf,
@@ -18,6 +19,13 @@ fn data_json(raw: &str) -> Value {
 }
 
 impl ZcodeProvider {
+    fn has_parent_column(con: &Connection) -> anyhow::Result<bool> {
+        let mut stmt = con.prepare("pragma table_info(session)")?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names.iter().any(|name| name == "parent_id"))
+    }
     pub fn new(db_path: std::path::PathBuf) -> Self {
         ZcodeProvider { db_path }
     }
@@ -79,6 +87,8 @@ impl super::Provider for ZcodeProvider {
         )?;
 
         let mut evs: Vec<Event> = Vec::new();
+        let mut records = Vec::new();
+        let mut event_ranges = Vec::new();
         let mut stmt = con.prepare(
             "select m.data as mdata, p.data as pdata
              from part p
@@ -93,6 +103,7 @@ impl super::Provider for ZcodeProvider {
             let (mraw, praw) = row?;
             let m = data_json(&mraw);
             let p = data_json(&praw);
+            let first_event = evs.len();
             let msg_role = m
                 .get("role")
                 .and_then(|r| r.as_str())
@@ -188,24 +199,73 @@ impl super::Provider for ZcodeProvider {
                 }
                 _ => {} // step-start / step-finish / file / timeline
             }
+            event_ranges.push(first_event..evs.len());
+            records.push((m, p));
         }
 
+        let resume_events = context::resume_events(&records, &event_ranges, &evs)?;
+        let parent_session = if Self::has_parent_column(&con)? {
+            con.query_row(
+                "select parent_id from session where id=?1",
+                [&r.id],
+                |row| row.get::<_, Option<String>>(0),
+            )?
+        } else {
+            con.query_row("select json_extract(data,'$.parent_session') from session_entry where session_id=?1 and type='migration/parent'",[&r.id],|row|row.get::<_,Option<String>>(0)).ok().flatten()
+        };
         Ok(Session {
             source: "zcode".into(),
             id: r.id.clone(),
             title: Some(title),
             cwd: Some(directory),
             agent_preset: None,
-            parent_session: None,
+            parent_session,
             origin: None,
             created_ms: created,
             updated_ms: updated,
             events: evs,
-            resume_events: None,
+            resume_events,
         })
     }
 
+    fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
+        let con = self.open_ro()?;
+        let sql = if Self::has_parent_column(&con)? {
+            "select id from session where parent_id=?1"
+        } else {
+            "select session_id from session_entry where type='migration/parent' and json_extract(data,'$.parent_session')=?1"
+        };
+        let mut stmt = con.prepare(sql)?;
+        let ids = stmt
+            .query_map([&parent.id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        Ok(self
+            .discover()?
+            .into_iter()
+            .filter(|r| ids.contains(&r.id))
+            .collect())
+    }
+
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {
+        // Do this in dry runs too so a malformed child cannot fail only after
+        // the preceding members of its family have already been written.
+        for events in std::iter::once(&s.events).chain(s.resume_events.iter()) {
+            let mut calls = std::collections::HashSet::new();
+            for event in events {
+                match &event.kind {
+                    EventKind::ToolCall { call_id, .. } => { calls.insert(call_id); },
+                    EventKind::ToolResult { call_id, .. } => anyhow::ensure!(calls.contains(call_id),
+                        "ZCode tool result {call_id:?} has no matching tool call; no destination was written"),
+                    _ => {},
+                }
+            }
+        }
+        if opts.dry_run {
+            let con = self.open_ro()?;
+            for table in ["session", "message", "part", "session_entry"] {
+                con.prepare(&format!("select * from {table} limit 0"))?;
+            }
+        }
         let cwd = opts
             .cwd
             .clone()
@@ -229,8 +289,9 @@ impl super::Provider for ZcodeProvider {
             });
 
         if !opts.dry_run {
-            let con = Connection::open(&self.db_path)?;
-            con.busy_timeout(std::time::Duration::from_secs(10))?;
+            let mut database = Connection::open(&self.db_path)?;
+            database.busy_timeout(std::time::Duration::from_secs(10))?;
+            let con = database.transaction()?;
             // clear any previous import of this session so re-runs never leave stale rows
             con.execute(
                 "delete from part where session_id = ?1",
@@ -266,6 +327,20 @@ impl super::Provider for ZcodeProvider {
             )?;
 
             // semantics native rows carry; the desktop renderer filters on uiVisibility
+            if Self::has_parent_column(&con)? {
+                con.execute(
+                    "update session set parent_id=?1 where id=?2",
+                    rusqlite::params![s.parent_session, session_id],
+                )?;
+            }
+            con.execute(
+                "delete from session_entry where session_id=?1 and type='migration/parent'",
+                [&session_id],
+            )?;
+            if let Some(parent) = &s.parent_session {
+                con.execute("insert into session_entry(id,session_id,type,time_created,time_updated,data) values(?1,?2,'migration/parent',?3,?3,?4)",
+                    rusqlite::params![format!("{session_id}:migration-parent"),session_id,s.updated_ms,json!({"parent_session":parent}).to_string()])?;
+            }
             let sem_user = json!({"origin": "real_user", "kind": "user_prompt",
                                   "uiVisibility": "visible", "providerVisibility": "visible",
                                   "transcriptVisibility": "visible"});
@@ -328,7 +403,31 @@ impl super::Provider for ZcodeProvider {
                 Ok(())
             };
 
-            for e in &s.events {
+            let write_events: Vec<&Event> = s
+                .events
+                .iter()
+                .chain(s.resume_events.iter().flatten())
+                .collect();
+            for (index, e) in write_events.into_iter().enumerate() {
+                let archival = s.resume_events.is_some() && index < s.events.len();
+                let mut sem_user = sem_user.clone();
+                let mut sem_asst = sem_asst.clone();
+                if archival {
+                    sem_user["providerVisibility"] = json!("hidden");
+                    sem_asst["providerVisibility"] = json!("hidden");
+                }
+                if index == s.events.len() && s.resume_events.is_some() {
+                    insert_message(
+                        &con,
+                        &mut msg_seq,
+                        &mut part_seq,
+                        "assistant",
+                        sem_timeline.clone(),
+                        s.updated_ms,
+                        vec![json!({"type":"compaction", "harnessBridgeResume":true,
+                            "summary":"The retained migration context follows; earlier entries are archival."})],
+                    )?;
+                }
                 let ts = s.event_ms(e, offset);
                 offset += 1;
                 match &e.kind {
@@ -387,8 +486,8 @@ impl super::Provider for ZcodeProvider {
                     EventKind::ToolResult { call_id, text } => {
                         // attach the result to the pending tool part
                         let pending = con.query_row(
-                            "select id, data from part where session_id = ?1 and data like ?2 order by sequence desc limit 1",
-                            rusqlite::params![session_id, format!("%{}%", call_id)],
+                            "select id, data from part where session_id = ?1 and json_extract(data, '$.type') = 'tool' and json_extract(data, '$.callID') = ?2 order by sequence desc limit 1",
+                            rusqlite::params![session_id, call_id],
                             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                         );
                         if let Ok((part_id, raw)) = pending {
@@ -400,6 +499,8 @@ impl super::Provider for ZcodeProvider {
                                 "update part set data = ?1, time_updated = ?2 where id = ?3",
                                 rusqlite::params![p.to_string(), ts, part_id],
                             )?;
+                        } else {
+                            anyhow::bail!("ZCode tool result {call_id:?} has no matching tool part; import rolled back");
                         }
                     }
                     EventKind::Compaction { id, text } => {
@@ -418,7 +519,7 @@ impl super::Provider for ZcodeProvider {
                     EventKind::TurnStart | EventKind::TurnEnd { .. } | EventKind::Meta { .. } => {}
                 }
             }
-            con.close().ok();
+            con.commit()?;
         }
 
         Ok(WriteOutcome {

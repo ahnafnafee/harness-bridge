@@ -85,28 +85,14 @@ pub fn migrate(
             text:format!("Imported session family: these are saved historical child sessions, not running agents. Destination parent links use the translated IDs below. Native child display is destination-dependent.\n{}",serde_json::to_string(&links)?),
             source_kind:Some("migration-session-family".into())});
         let (_, root, options, outcome) = &mut plans[0];
+        // Family bookkeeping belongs in the visible archive and native parent
+        // links. Adding every translated ID to model context can make a parent
+        // that already passed preflight fail solely because it has children.
         if root.resume_events.is_none() {
             root.resume_events = Some(root.events.clone());
         }
-        root.resume_events.as_mut().unwrap().push(note.clone());
         root.events.push(note);
-        let mut policy = crate::resume::prepare(root, max_chars, prune)?;
-        let retained_chars = policy
-            .get("retained_chars")
-            .unwrap_or(&policy["input_chars"])
-            .clone();
-        let previous = &outcome.extra["resume_context_policy"];
-        if previous["pruned"] == true {
-            policy["pruned"] = json!(true);
-            policy["input_chars"] = previous["input_chars"].clone();
-            for key in ["reasoning_events_removed", "tool_outputs_shortened"] {
-                policy[key] =
-                    json!(previous[key].as_u64().unwrap_or(0) + policy[key].as_u64().unwrap_or(0));
-            }
-            if policy.get("retained_chars").is_none() {
-                policy["retained_chars"] = retained_chars;
-            }
-        }
+        let policy = outcome.extra["resume_context_policy"].clone();
         *outcome = destination.write(root, options)?;
         outcome.extra["resume_context_policy"] = policy;
     }

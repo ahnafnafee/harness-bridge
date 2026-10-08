@@ -167,6 +167,8 @@ After importing or updating a chat, reopen or refresh Codex Desktop so it reload
 
 `--include-subagents` imports saved child conversations, including nested descendants, and reports their destination ids under `extra.child_sessions`. All members are read and converted in dry-run mode before any actual write. Reimports use deterministic ids. A failure during a later filesystem or registry write can still leave earlier family members written; there is no transaction across separate stores.
 
+The full child-id map is kept in the parent's preserved transcript, alongside native parent links and the command's output. It does not enlarge the parent's model context or trigger additional pruning.
+
 | Destination | Parent link |
 | :-- | :-- |
 | Codex | Native parent metadata and historical `thread_spawn_edges` when available. |

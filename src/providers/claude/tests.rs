@@ -389,7 +389,8 @@ fn zcode_export_keeps_archive_visible_and_context_current_and_rolls_back_failure
 fn family_import_preserves_native_children_and_is_idempotent() {
     use crate::providers::dsh::DshProvider;
     use crate::providers::zcode::ZcodeProvider;
-    let fixture = Fixture::new(&[message("root", "user", json!("parent task"))]);
+    let protected_text = "parent task ".repeat(200);
+    let fixture = Fixture::new(&[message("root", "user", json!(protected_text))]);
     let children_dir = Path::new(&fixture.source.locator)
         .with_extension("")
         .join("subagents");
@@ -409,6 +410,10 @@ fn family_import_preserves_native_children_and_is_idempotent() {
     )
     .unwrap();
     let source = ClaudeProvider::new(fixture.dir.clone());
+    let max_chars = serde_json::to_string(&fixture.read().unwrap().events)
+        .unwrap()
+        .chars()
+        .count();
     assert_eq!(source.children(&fixture.source).unwrap().len(), 1);
     let codex_home = fixture.dir.join("target-codex");
     std::fs::create_dir_all(codex_home.join("sessions")).unwrap();
@@ -443,7 +448,7 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             fixture.source.clone(),
             &WriteOpts::default(),
             true,
-            750_000,
+            max_chars,
             false,
         )
         .unwrap();
@@ -453,6 +458,26 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             .find(|r| r.id == outcome.native_id)
             .unwrap();
         let children = target.children(&root).unwrap();
+        let parent = target.read(&root).unwrap();
+        assert!(
+            serde_json::to_string(&parent.events)
+                .unwrap()
+                .contains("Imported session family"),
+            "{}",
+            target.name()
+        );
+        let context = context_text(&parent);
+        assert!(context.contains(&protected_text), "{}", target.name());
+        assert!(
+            !context.contains("Imported session family"),
+            "{}",
+            target.name()
+        );
+        assert_eq!(
+            outcome.extra["resume_context_policy"]["input_chars"],
+            max_chars
+        );
+        assert_eq!(outcome.extra["resume_context_policy"]["pruned"], false);
         assert_eq!(children.len(), 1, "{}", target.name());
         let child = target.read(&children[0]).unwrap();
         assert_eq!(child.parent_session, Some(root.id.clone()));
@@ -485,7 +510,7 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             fixture.source.clone(),
             &WriteOpts::default(),
             true,
-            750_000,
+            max_chars,
             false,
         )
         .unwrap();

@@ -151,6 +151,8 @@ Source transcripts can retain records from before compaction. Sending that entir
 
 The DSH reader replays `surfaceOp` replacements in their actual context order and retains the tool calls paired with surviving results. The Codex writer keeps the full converted transcript for display and adds a native `compacted` record containing the retained context. Migration output reports `resume_context_items` and `resume_context_chars` when this metadata is available.
 
+Imported reasoning remains visible in the Codex transcript, while the resume checkpoint represents it as labeled assistant text. The normalized model cannot transfer the originating service's signed or encrypted hidden state. This applies to every source provider, including uncompacted sessions and normalized Codex reads. Replaying synthesized native reasoning can otherwise cause `unsupported_persisted_item_context` on a later response continuation.
+
 Compacted DSH transcripts without authoritative surface operations and Codex checkpoints without plaintext replacement history fail with an explanation instead of replaying the archive. Uncompacted sources use their full context and the same size preflight.
 
 When retained context exceeds the budget, compact the source or explicitly allow output pruning:
@@ -162,6 +164,8 @@ harness-bridge migrate "<id-prefix>" --from claude --to codex --prune-resume-con
 Pruning retains a notice and the beginning/end of shortened tool outputs; it is not a generated summary. If protected messages or arguments still exceed the budget, the import stops before writing. `--resume-max-chars` can be adjusted for a suitable destination model. Counts describe serialized normalized context, not the destination's exact request or token usage; native instructions, tool catalogs and model limits still affect whether a remote request fits.
 
 After importing or updating a chat, reopen or refresh Codex Desktop so it reloads the rollout and registry. For a chat already loaded in memory, restart the app before resuming.
+
+`python scripts/verify_codex_resume.py <rollout> --codex <executable>` tests an isolated copy with the real app-server and a local Responses stub. It checks request size and unsigned reasoning across a harmless plan-tool continuation. Custom HTTP providers may send full history instead of `previous_response_id`; the probe reports which mode it observed. This local replay contract makes no remote model calls and does not establish acceptance by the remote service.
 
 ## Child sessions
 

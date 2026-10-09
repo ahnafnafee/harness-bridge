@@ -25,10 +25,21 @@ pub(super) fn transcript_item(s: &Session, event: &Event, ms: i64, ordinal: i64)
 pub(super) fn resume_item(s: &Session, event: &Event, ms: i64, ordinal: usize) -> Option<Value> {
     // Surface replay contains model messages and tool pairs, not archive telemetry.
     match &event.kind {
-        EventKind::Message { .. }
-        | EventKind::Reasoning { .. }
-        | EventKind::ToolCall { .. }
-        | EventKind::ToolResult { .. } => encode(
+        EventKind::Message { .. } | EventKind::ToolCall { .. } | EventKind::ToolResult { .. } => {
+            encode(
+                &event.kind,
+                &uuid7(ms, &format!("resume-item|{}|{ordinal}", s.id)),
+            )
+        }
+        // The IR retains visible reasoning text, not the originating service's
+        // signed/encrypted state. Native reasoning items would fabricate that
+        // state and can poison a later previous_response_id continuation.
+        EventKind::Reasoning { text } => Some(message(
+            &uuid7(ms, &format!("resume-item|{}|{ordinal}", s.id)),
+            Role::Assistant,
+            &format!("[Imported reasoning]\n{text}"),
+        )),
+        EventKind::Meta { kind, .. } if kind == "tool-registry" || kind == "goal" => encode(
             &event.kind,
             &uuid7(ms, &format!("resume-item|{}|{ordinal}", s.id)),
         ),

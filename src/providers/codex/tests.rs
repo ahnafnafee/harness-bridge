@@ -1,6 +1,260 @@
 use super::*;
 use crate::providers::{dsh::DshProvider, Provider};
 
+fn reasoning_template(dir: &std::path::Path) -> CodexProvider {
+    let home = dir.join("codex");
+    std::fs::create_dir_all(home.join("sessions")).unwrap();
+    let template = [
+        json!({"type":"session_meta", "payload":{"originator":"Codex Desktop", "thread_source":"user", "base_instructions":{"text":"base"}}}),
+        json!({"type":"turn_context", "payload":{"model":"gpt-test", "cwd":"test", "approval_policy":"never", "sandbox_policy":{"type":"danger-full-access"}, "effort":"low", "summary":"auto"}}),
+    ];
+    std::fs::write(
+        home.join("sessions/template.jsonl"),
+        template
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    CodexProvider::new(home)
+}
+
+#[test]
+fn imported_reasoning_uses_text_context_without_losing_archive() {
+    let dir = std::env::temp_dir().join(format!(
+        "hb-reasoning-{}",
+        uuid7(chrono::Utc::now().timestamp_millis(), "portable-reasoning")
+    ));
+    let provider = reasoning_template(&dir);
+    let events = vec![
+        Event::at(
+            Some(1001),
+            EventKind::Message {
+                role: Role::User,
+                text: "task".into(),
+                source_kind: None,
+            },
+        ),
+        Event::at(
+            Some(1002),
+            EventKind::Reasoning {
+                text: "older reasoning".into(),
+            },
+        ),
+        Event::at(
+            Some(1003),
+            EventKind::Reasoning {
+                text: "retained reasoning Ω".into(),
+            },
+        ),
+        Event::at(
+            Some(1004),
+            EventKind::ToolCall {
+                call_id: "call-source".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"test"}"#.into(),
+            },
+        ),
+        Event::at(
+            Some(1005),
+            EventKind::ToolResult {
+                call_id: "call-source".into(),
+                text: "result".into(),
+            },
+        ),
+        Event::at(
+            Some(1006),
+            EventKind::Message {
+                role: Role::Assistant,
+                text: "answer".into(),
+                source_kind: None,
+            },
+        ),
+        Event::at(
+            Some(1007),
+            EventKind::Meta {
+                kind: "goal".into(),
+                data: json!({"objective":"preserve the active goal"}),
+            },
+        ),
+        Event::at(
+            Some(1008),
+            EventKind::Meta {
+                kind: "tool-registry".into(),
+                data: json!({"added":["read"]}),
+            },
+        ),
+    ];
+    // All readers normalize reasoning to text, including native Codex reads.
+    // No provider's hidden reasoning state survives the normalized model.
+    for source in ["zcode", "claude", "dsh", "agy", "codex"] {
+        for checkpointed in [false, true] {
+            let session = Session {
+                source: source.into(),
+                id: format!("{source}-{checkpointed}"),
+                title: None,
+                cwd: Some("test".into()),
+                agent_preset: None,
+                parent_session: None,
+                origin: None,
+                created_ms: 1000,
+                updated_ms: 1007,
+                events: events.clone(),
+                resume_events: checkpointed.then(|| {
+                    events
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != 1)
+                        .map(|(_, event)| event.clone())
+                        .collect()
+                }),
+            };
+            let outcome = provider.write(&session, &WriteOpts::default()).unwrap();
+            let records: Vec<Value> = std::fs::read_to_string(&outcome.location)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|r| r["type"] == "response_item" && r["payload"]["type"] == "reasoning")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|r| r["payload"]["item"]["type"] == "Reasoning")
+                    .count(),
+                2
+            );
+            let checkpoint = records
+                .iter()
+                .rev()
+                .find(|r| r["type"] == "compacted")
+                .unwrap();
+            let history = checkpoint["payload"]["replacement_history"]
+                .as_array()
+                .unwrap();
+            assert!(history.iter().all(|item| item["type"] != "reasoning"));
+            assert!(history.iter().any(|item| item["role"] == "developer"
+                && item.to_string().contains("preserve the active goal")));
+            assert!(history.iter().any(|item| item["role"] == "developer"
+                && item.to_string().contains("Tools added: read")));
+            assert!(history.iter().any(|item| item["type"] == "message"
+                && item["role"] == "assistant"
+                && item["content"][0]["text"] == "[Imported reasoning]\nretained reasoning Ω"));
+            assert_eq!(
+                history
+                    .iter()
+                    .any(|item| item.to_string().contains("older reasoning")),
+                !checkpointed
+            );
+            assert!(history.iter().any(|item| item["type"] == "function_call"
+                && item["call_id"] == "call-source"
+                && item["arguments"] == r#"{"path":"test"}"#));
+            assert!(history
+                .iter()
+                .any(|item| item["type"] == "function_call_output"
+                    && item["call_id"] == "call-source"
+                    && item["output"] == "result"));
+            let reference = SessionRef {
+                provider: "codex".into(),
+                id: outcome.native_id,
+                title: None,
+                cwd: None,
+                created_ms: None,
+                updated_ms: None,
+                locator: outcome.location,
+                migrated: true,
+            };
+            let reread = provider.read(&reference).unwrap();
+            assert_eq!(
+                reread
+                    .events
+                    .iter()
+                    .filter(|event| matches!(event.kind, EventKind::Reasoning { .. }))
+                    .count(),
+                2
+            );
+            assert!(reread
+                .resume_events
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(event.kind, EventKind::Reasoning { .. })));
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn zcode_reasoning_import_does_not_invent_native_hidden_state() {
+    use crate::providers::zcode::ZcodeProvider;
+    let dir = std::env::temp_dir().join(format!(
+        "hb-zcode-reasoning-{}",
+        uuid7(chrono::Utc::now().timestamp_millis(), "zcode-replay")
+    ));
+    let codex = reasoning_template(&dir);
+    let db = dir.join("source.sqlite");
+    let con = rusqlite::Connection::open(&db).unwrap();
+    con.execute_batch("create table session(id text primary key,title text,directory text,time_created integer,time_updated integer,parent_id text);
+        create table message(id text primary key,session_id text,sequence integer,data text);
+        create table part(id text primary key,message_id text,session_id text,sequence integer,data text);
+        insert into session values('z-source','fixture','test',1000,1005,null);").unwrap();
+    for (i, role, part) in [
+        (0, "user", json!({"type":"text","text":"task"})),
+        (
+            1,
+            "assistant",
+            json!({"type":"reasoning","text":"source reasoning","providerMetadata":{"opaque":"source-only-state"}}),
+        ),
+        (
+            2,
+            "assistant",
+            json!({"type":"tool","callID":"original-call","tool":"read","state":{"status":"completed","input":{"path":"test"},"output":"output"}}),
+        ),
+        (3, "assistant", json!({"type":"text","text":"answer"})),
+    ] {
+        let id = format!("m{i}");
+        con.execute(
+            "insert into message values(?1,'z-source',?2,?3)",
+            rusqlite::params![id, i, json!({"role":role}).to_string()],
+        )
+        .unwrap();
+        con.execute(
+            "insert into part values(?1,?1,'z-source',?2,?3)",
+            rusqlite::params![id, i, part.to_string()],
+        )
+        .unwrap();
+    }
+    drop(con);
+    let zcode = ZcodeProvider::new(db);
+    let reference = zcode.discover().unwrap().remove(0);
+    let session = zcode.read(&reference).unwrap();
+    assert!(session.resume_events.is_none());
+    assert!(session.events.iter().any(
+        |event| matches!(&event.kind,EventKind::Reasoning {text} if text=="source reasoning")
+    ));
+    let outcome = codex.write(&session, &WriteOpts::default()).unwrap();
+    let text = std::fs::read_to_string(outcome.location).unwrap();
+    let checkpoint: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    let history = checkpoint["payload"]["replacement_history"]
+        .as_array()
+        .unwrap();
+    assert!(history.iter().all(|item| item["type"] != "reasoning"));
+    assert!(history
+        .iter()
+        .any(|item| item["content"][0]["text"] == "[Imported reasoning]\nsource reasoning"));
+    assert!(history
+        .iter()
+        .any(|item| item["type"] == "function_call_output" && item["call_id"] == "original-call"));
+    assert!(!text.contains("source-only-state"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn dsh_replacements_become_a_native_resume_checkpoint() {
     let dir = std::env::temp_dir().join(format!(

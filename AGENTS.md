@@ -80,8 +80,9 @@ The port is idempotent: same source + preset -> same new session id.
   their existing context semantics and do not use normalized context pruning.
 - **Saved child links** use native destination fields where supported; agy uses the migration archive and ZCode
   uses a migration entry on schemas without `parent_id`. These imports do not start agents or translate tools.
-- **Reasoning** is retained in the normalized archive. Active foreign reasoning in Claude writes becomes plain
-  assistant text because a foreign thinking signature cannot be replayed. agy's native steps remain text-only.
+- **Reasoning** is retained in the normalized archive. Active reasoning in Codex writes becomes labeled assistant
+  text in a native resume checkpoint, including for uncompacted sources, because normalized text has no verifiable
+  hidden state. Claude writes also use plain assistant text for active foreign reasoning. agy's native steps remain text-only.
 
 ## Testing pattern (when something looks wrong)
 

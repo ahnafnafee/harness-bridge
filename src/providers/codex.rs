@@ -752,7 +752,16 @@ impl super::Provider for CodexProvider {
 
         // Display records retain the complete transcript. A native checkpoint
         // replaces only the model context Codex replays when the user resumes.
-        let resume_history = s.resume_events.as_ref().map(|events| {
+        // Even uncompacted sources need a checkpoint when their archive has
+        // reasoning: visible text is portable, hidden provider state is not.
+        // Keep archive/UI reasoning intact but replay it as assistant text.
+        let context_events = s.resume_events.as_deref().or_else(|| {
+            s.events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Reasoning { .. }))
+                .then_some(s.events.as_slice())
+        });
+        let resume_history = context_events.map(|events| {
             let mut history = vec![out[1]["payload"].clone()]; // import provenance/cwd note
             for (i, event) in events.iter().enumerate() {
                 let ms = s.event_ms(event, i as i64);

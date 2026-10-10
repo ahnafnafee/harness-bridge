@@ -350,6 +350,7 @@ impl super::Provider for ClaudeProvider {
                 let parent_path = s
                     .events
                     .iter()
+                    .rev()
                     .find_map(|event| match &event.kind {
                         EventKind::Meta { kind, data } if kind == "migration-parent-depth" => {
                             data["location"].as_str()

@@ -500,6 +500,7 @@ impl super::Provider for CodexProvider {
             let depth = s
                 .events
                 .iter()
+                .rev()
                 .find_map(|event| match &event.kind {
                     EventKind::Meta { kind, data } if kind == "migration-parent-depth" => {
                         data["depth"].as_u64()

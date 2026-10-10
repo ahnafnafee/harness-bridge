@@ -17,7 +17,7 @@ harness can list and resume. Nothing in the source is modified.
 - The user wants a session to appear in a harness it was not created in.
 
 Do NOT use it to: merge two sessions, edit conversation content, or export human-readable transcripts
-(it writes native harness stores, not markdown).
+(it writes native harness stores and portable session data, not markdown).
 
 ## Commands
 
@@ -27,6 +27,8 @@ harness-bridge list --provider dsh                    # one provider
 harness-bridge migrate <id-prefix-or-title> --from dsh --to codex
 harness-bridge migrate <query> --from dsh --to codex --cwd "F:\\target\\dir" --name "New name"
 harness-bridge migrate <query> --dry-run              # full conversion, nothing written
+harness-bridge export <query> --from claude --output session.hbridge.json --include-subagents
+harness-bridge import session.hbridge.json --to codex --cwd "D:\\project" --dry-run
 ```
 
 Conversion flags: `--cwd` (target base directory), `--name` (display title), `--dry-run`,
@@ -35,6 +37,13 @@ Conversion flags: `--cwd` (target base directory), `--name` (display title), `--
 `--include-subagents` (saved children with translated parent links), plus home overrides
 `--dsh-home`, `--codex-home`, `--claude-home`, `--zcode-db`, `--agy-dir` (use these for testing against
 throwaway homes; see Testing below).
+
+Portable exports preserve the normalized archive and retained context in a versioned JSON file. Export reads
+only the source store and refuses to overwrite an existing file. Import validates the version/checksum/family,
+reads no source stores, and uses the receiver's native writer and context preflight. All bundled children import
+automatically. Initialize the destination harness and its required template on the receiving machine first.
+See [the format specification](docs/portable-format.md). Import re-runs have the same destination-overwrite
+caveat as local migrations; preserve any later destination turns before repeating an import.
 
 ## Decision rules for agents
 

@@ -30,6 +30,7 @@ The visible transcript and the context sent to the model are preserved separatel
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Move a session to another machine](#move-a-session-to-another-machine)
 - [Compatibility](#compatibility)
 - [Options](#options)
 - [How conversion works](#how-conversion-works)
@@ -86,6 +87,37 @@ harness-bridge migrate "<id-prefix>" --from agy --to codex
 ```
 
 If a query matches several sessions, the command lists their ids and stops. Use a longer id prefix to select the intended session.
+
+## Move a session to another machine
+
+On the source PC, export a versioned portable JSON file. Add `--include-subagents` to carry saved child sessions and their links:
+
+```sh
+harness-bridge export "API migration" --from zcode --output session.hbridge.json --include-subagents
+```
+
+Copy that file to the other PC and install harness-bridge 0.3.0 or later there. You can build the current version directly from this repository:
+
+```sh
+cargo install --locked --git https://github.com/ahnafnafee/harness-bridge
+```
+
+Choose the destination harness and its project directory, then preview and import:
+
+```powershell
+harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --dry-run
+harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app"
+```
+
+Both commands support all five harnesses. Import reads the transfer file without needing the source harness's home or database. Every included child is imported automatically, with destination ids and parent links recomputed on the receiving PC. The transcript, original timestamps, tool pairs, and retained resume context travel together. Context budgeting, opt-in pruning, and portable reasoning replay apply during import.
+
+If import reports an oversized retained context, add `--prune-resume-context` to the preview/import commands to shorten reasoning and tool outputs while keeping the archive, or compact the source and export again.
+
+Export refuses to overwrite an existing file; `export --dry-run` reports its counts without creating it. Import validates the format version, payload checksum, and family graph before converting. The receiving harness must already be initialized: Codex needs a local top-level Desktop session as a template, ZCode needs its database, and agy needs a template conversation. Existing provider constraints still apply.
+
+The file carries conversation data, including recorded paths and text, rather than project files, attachments, credentials from harness settings, or executable hidden model state. Move the project separately. `--cwd` changes the new base directory while paths inside the history remain as recorded. Reimporting uses deterministic destination ids and can overwrite later destination turns, as with `migrate`.
+
+See the [portable format specification](docs/portable-format.md) for version 1's layout and validation rules.
 
 ## Compatibility
 

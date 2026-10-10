@@ -1194,6 +1194,37 @@ mod tests {
         provider.write(&s, &WriteOpts::default()).unwrap();
         let children = provider.children(&root).unwrap();
         assert_eq!(children.len(), 1);
+        let portable_file = home.join("family.hbridge.json");
+        crate::portable::Bundle::collect(&provider, root.clone(), true)
+            .unwrap()
+            .save(&portable_file, false)
+            .unwrap();
+        let portable = crate::portable::Bundle::load(&portable_file).unwrap();
+        let transferred = crate::family::migrate(
+            &portable,
+            &provider,
+            portable.root(),
+            &WriteOpts::default(),
+            true,
+            750000,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            transferred.extra["child_sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_ne!(transferred.native_id, root.id);
+        let transferred_root = provider
+            .discover()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == transferred.native_id)
+            .unwrap();
+        assert_eq!(provider.children(&transferred_root).unwrap().len(), 1);
         assert_eq!(
             provider.read(&children[0]).unwrap().parent_session,
             Some(root.id)

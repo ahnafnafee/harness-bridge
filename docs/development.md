@@ -9,6 +9,8 @@
 | `src/main.rs` | Entry point and error reporting. |
 | `src/cli.rs` | Command parsing, query resolution, and migration orchestration. |
 | `src/family.rs` | Family discovery, translated parent ids, whole-family conversion preflight and writes. |
+| `src/portable.rs` | Versioned portable JSON, checksums, family validation, and a file-backed import source. |
+| `src/portable/tests.rs` | Portable fidelity, corrupt-file handling, context preflight, pruning, and receiver placement checks. |
 | `src/resume.rs` | Shared context-size preflight and explicit output pruning. |
 | `src/ir.rs` | Sessions, events, discovery references, and write options/results. |
 | `src/util.rs` | Shared paths, ids, timestamps, compression, and format helpers. |
@@ -32,6 +34,8 @@ DSH replacement bounds refer to positions in the current context surface. A newe
 Claude's latest boundary retains its summary, declared preserved records, and later messages. Codex reads plaintext replacement histories; opaque checkpoints fail explicitly. ZCode respects persisted summaries and provider visibility. Codex exports retained events into a native `compacted.payload.replacement_history`, while the visible rollout still contains the full converted archive. Other writers use their native checkpoint/visibility mechanisms; agy uses retained text turns plus a separate normalized archive.
 
 The shared size policy checks serialized normalized event characters before writing. Pruning is opt-in, preserves protected text and tool arguments, and never changes the archive. It is not a token estimate. Family tests cover nested parent links, deterministic reimports, native Codex registration, both ZCode parent schemas, and preflight failures leaving the destination unwritten. Temporary Claude homes must never register sessions in the user's real desktop sidebar.
+
+Portable exports serialize that same model into the [version 1 format](portable-format.md), preserving archive/context separation without applying a destination budget. Loading validates the raw payload checksum before deserializing it, then validates the complete family. A read-only in-memory provider exposes those sessions to the existing family pipeline, so the receiving PC never opens source stores. Receiver-generated parent placement metadata takes precedence over historical migration metadata.
 
 ## Local validation
 

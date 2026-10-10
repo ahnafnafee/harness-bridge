@@ -5,6 +5,8 @@ use crate::{
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+pub(crate) const MAX_SESSIONS: usize = 1024;
+
 pub fn migrate(
     source: &dyn Provider,
     destination: &dyn Provider,
@@ -26,7 +28,7 @@ pub fn migrate(
             reference.id
         );
         anyhow::ensure!(
-            seen.len() <= 1024,
+            seen.len() <= MAX_SESSIONS,
             "session family exceeds the 1024-session safety bound"
         );
         if include_children {

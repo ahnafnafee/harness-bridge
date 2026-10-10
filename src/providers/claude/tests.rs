@@ -415,6 +415,13 @@ fn family_import_preserves_native_children_and_is_idempotent() {
         .chars()
         .count();
     assert_eq!(source.children(&fixture.source).unwrap().len(), 1);
+    let bundle_file = fixture.dir.join("family.hbridge.json");
+    crate::portable::Bundle::collect(&source, fixture.source.clone(), true)
+        .unwrap()
+        .save(&bundle_file, false)
+        .unwrap();
+    let portable = crate::portable::Bundle::load(&bundle_file).unwrap();
+    assert_eq!(portable.discover().unwrap().len(), 3);
     let codex_home = fixture.dir.join("target-codex");
     std::fs::create_dir_all(codex_home.join("sessions")).unwrap();
     std::fs::write(codex_home.join("sessions/template.jsonl"), [
@@ -518,6 +525,23 @@ fn family_import_preserves_native_children_and_is_idempotent() {
         assert_eq!(
             second.extra["child_sessions"][0]["native_id"],
             outcome.extra["child_sessions"][0]["native_id"]
+        );
+        // The file-backed source has no dependency on the exporting machine's
+        // native homes, and must preserve the same canonical descendant ids.
+        let transferred = crate::family::migrate(
+            &portable,
+            target.as_ref(),
+            portable.root(),
+            &WriteOpts::default(),
+            true,
+            max_chars,
+            false,
+        )
+        .unwrap();
+        assert_eq!(transferred.native_id, outcome.native_id);
+        assert_eq!(
+            transferred.extra["child_sessions"],
+            second.extra["child_sessions"]
         );
     }
 }

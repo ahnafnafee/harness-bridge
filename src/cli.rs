@@ -41,6 +41,44 @@ enum Command {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Export a portable session file for import on another machine.
+    Export {
+        /// Session id/prefix or title substring within the source harness.
+        query: String,
+        #[arg(long, default_value = "dsh")]
+        from: String,
+        /// New portable JSON file; existing files are never overwritten.
+        #[arg(long, short)]
+        output: PathBuf,
+        /// Include saved child sessions recursively with their parent links.
+        #[arg(long)]
+        include_subagents: bool,
+        /// Read and serialize the session without creating the export file.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import a portable session file into this machine's chosen harness.
+    Import {
+        /// Portable JSON file created by harness-bridge export.
+        file: PathBuf,
+        #[arg(long, default_value = "codex")]
+        to: String,
+        /// Destination base directory; history paths remain as recorded.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Display name for the imported root session (default: source title).
+        #[arg(long)]
+        name: Option<String>,
+        /// Convert and preflight every bundled session without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Preflight character budget for retained context (not a model token limit).
+        #[arg(long, default_value_t = crate::resume::DEFAULT_MAX_CHARS)]
+        resume_max_chars: usize,
+        /// Shorten reasoning/tool outputs in resume context; preserve the archive.
+        #[arg(long)]
+        prune_resume_context: bool,
+    },
     /// Migrate one session from a source harness to a target harness.
     Migrate {
         /// Session id (or prefix) or title substring within the source provider.
@@ -167,6 +205,46 @@ pub fn run() -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Export {
+            query,
+            from,
+            output,
+            include_subagents,
+            dry_run,
+        } => {
+            let source = providers::provider_named(&from, &homes)?;
+            let root = resolve(&source.discover()?, &query)?;
+            let bundle =
+                crate::portable::Bundle::collect(source.as_ref(), root, include_subagents)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&bundle.save(&output, dry_run)?)?
+            );
+            Ok(())
+        }
+        Command::Import {
+            file,
+            to,
+            cwd,
+            name,
+            dry_run,
+            resume_max_chars,
+            prune_resume_context,
+        } => {
+            let bundle = crate::portable::Bundle::load(&file)?;
+            let destination = providers::provider_named(&to, &homes)?;
+            let outcome = crate::family::migrate(
+                &bundle,
+                destination.as_ref(),
+                bundle.root(),
+                &ir::WriteOpts { cwd, name, dry_run },
+                true,
+                resume_max_chars,
+                prune_resume_context,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
+            Ok(())
+        }
         Command::Migrate {
             query,
             from,

@@ -93,6 +93,7 @@ The port is idempotent: same source + preset -> same new session id.
   `--rebuild-resume-context`, using readable checkpoint items and later turns or the archive as fallback.
   A recovery notice describes missing hidden state. Budgets/pruning still apply; encrypted state cannot be recovered,
   and decisions present only there can be lost. Unknown/malformed active items still fail rather than being discarded.
+- **Codex agent mail**: 0.3.2 reads native `agent_message` model-input records in archives, retained checkpoints and later turns. These become labeled user input preserving author, recipient and plaintext. Encrypted payloads are marked unavailable and require the same explicit recovery, even without compaction. Similar assistant UI notifications are not duplicated.
 - **Saved child links** use native destination fields where supported; agy uses the migration archive and ZCode
   uses a migration entry on schemas without `parent_id`. These imports do not start agents or translate tools.
 - **Reasoning** is retained in the normalized archive. Active reasoning in Codex writes becomes labeled assistant

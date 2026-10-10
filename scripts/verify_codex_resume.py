@@ -20,7 +20,7 @@ import threading
 import time
 
 
-def verify(codex, rollout, max_input_chars, timeout):
+def verify(codex, rollout, max_input_chars, timeout, expected_texts=()):
     captured = queue.Queue()
     persisted = {}
     request_number = 0
@@ -40,11 +40,15 @@ def verify(codex, rollout, max_input_chars, timeout):
             history = persisted.get(previous, []) + inputs
             size = len(json.dumps(inputs, ensure_ascii=False))
             unsigned = sum(item.get("type") == "reasoning" and not item.get("encrypted_content") for item in history)
+            missing_texts = [text for text in expected_texts if text not in json.dumps(history, ensure_ascii=False)]
             request_number += 1
             captured.put({"path": self.path, "input_chars": size, "items": len(inputs),
-                          "previous_response_id": previous, "unsigned_reasoning": unsigned})
+                          "previous_response_id": previous, "unsigned_reasoning": unsigned, "missing_expected_texts": missing_texts})
             error = None
-            if unsigned and request_number > 1:
+            if missing_texts:
+                error = {"message": "Expected retained text is absent from the resumed model input",
+                         "type": "invalid_request_error", "param": "input", "code": "missing_context"}
+            elif unsigned and request_number > 1:
                 error = {"message": "Persisted response contains unverifiable hidden reasoning state that Rustponses cannot replay.",
                          "type": "invalid_request_error", "param": "previous_response_id" if previous else "input",
                          "code": "unsupported_persisted_item_context"}
@@ -185,6 +189,8 @@ plugins = false
                     raise RuntimeError(f"Resumed turn failed: {errors or completed}")
                 if len(requests) < 2:
                     raise RuntimeError("The probe did not exercise a tool response continuation")
+                if any(request["missing_expected_texts"] for request in requests):
+                    raise RuntimeError("Imported agent-message text was lost before reaching the model")
                 if any(request["unsigned_reasoning"] for request in requests):
                     raise RuntimeError("The imported context contains unsigned native reasoning")
                 mode = "previous_response_id" if any(request["previous_response_id"] for request in requests[1:]) else "full history"

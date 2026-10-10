@@ -71,11 +71,19 @@ impl CodexProvider {
             self.codex_home.join("state_5.sqlite"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
-            if let Ok(mut statement) = connection.prepare("select id, title from threads") {
+            // New desktop schemas keep the chosen name separately from the
+            // initial-prompt title. Older schemas only have title.
+            if let Ok(mut statement) = connection
+                .prepare("select id, coalesce(nullif(name, ''), title) from threads")
+                .or_else(|_| connection.prepare("select id, title from threads"))
+            {
                 if let Ok(rows) = statement.query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 }) {
-                    titles.extend(rows.filter_map(Result::ok));
+                    titles.extend(
+                        rows.filter_map(Result::ok)
+                            .filter(|(_, title)| !title.trim().is_empty()),
+                    );
                 }
             }
         }
@@ -226,6 +234,11 @@ impl CodexProvider {
                     },
                 )),
                 "response_item" => match p.get("type").and_then(|t| t.as_str()) {
+                    Some("agent_message") => {
+                        if let Some(event) = context::agent_message(&p, ts)?.0 {
+                            evs.push(event);
+                        }
+                    }
                     Some("message") => {
                         let role = match p.get("role").and_then(|r| r.as_str()) {
                             Some("user") => Role::User,
@@ -359,7 +372,8 @@ impl CodexProvider {
                 let issue = error.downcast::<context::UnavailableContext>()?;
                 (issue.readable_events, Some(issue.reason.to_string()))
             }
-            Err(error) => return Err(error.context("cannot reconstruct retained context; export the readable archive or use --rebuild-resume-context for explicit transcript reconstruction")),
+            Err(error) if error.is::<context::UnavailableContext>() => return Err(error.context("cannot reconstruct retained context; export the readable archive or use --rebuild-resume-context for explicit transcript reconstruction")),
+            Err(error) => return Err(error.context("cannot decode retained Codex context; update harness-bridge to support this record; reconstruction cannot safely skip unknown or malformed active input")),
         };
         Ok(Session {
             source: "codex".into(),

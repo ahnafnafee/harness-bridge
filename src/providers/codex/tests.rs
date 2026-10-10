@@ -1,6 +1,113 @@
 use super::*;
 use crate::providers::{dsh::DshProvider, Provider};
 
+#[test]
+fn desktop_names_override_prompt_titles_with_legacy_schema_fallback() {
+    let dir = std::env::temp_dir().join(format!(
+        "hb-desktop-names-{}",
+        uuid7(chrono::Utc::now().timestamp_millis(), "desktop-names")
+    ));
+    for modern in [true, false] {
+        let home = dir.join(modern.to_string());
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("session_index.jsonl"),
+            [
+                json!({"id":"named","thread_name":"stale index name"}),
+                json!({"id":"empty","thread_name":"saved index name"}),
+            ]
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        )
+        .unwrap();
+        let connection = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        if modern {
+            connection
+                .execute_batch(
+                    "create table threads(id text,title text,name text);
+                insert into threads values('named','initial prompt','chosen desktop name');
+                insert into threads values('fallback','legacy prompt','');
+                insert into threads values('empty','','');",
+                )
+                .unwrap();
+        } else {
+            connection
+                .execute_batch(
+                    "create table threads(id text,title text);
+                insert into threads values('named','legacy title');
+                insert into threads values('empty','');",
+                )
+                .unwrap();
+        }
+        connection.close().unwrap();
+        let titles = CodexProvider::new(home).session_titles();
+        assert_eq!(
+            titles["named"],
+            if modern {
+                "chosen desktop name"
+            } else {
+                "legacy title"
+            }
+        );
+        assert_eq!(titles["empty"], "saved index name");
+        if modern {
+            assert_eq!(titles["fallback"], "legacy prompt");
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn native_agent_mail_exports_archive_without_bypassing_encrypted_input_guard() {
+    let dir = std::env::temp_dir().join(format!(
+        "hb-agent-mail-{}",
+        uuid7(chrono::Utc::now().timestamp_millis(), "agent-mail")
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout.jsonl");
+    let provider = CodexProvider::new(dir.clone());
+    let reference = SessionRef {
+        provider: "codex".into(),
+        id: "fixture".into(),
+        title: None,
+        cwd: None,
+        created_ms: None,
+        updated_ms: None,
+        locator: path.to_string_lossy().into(),
+        migrated: false,
+    };
+    for encrypted in [false, true] {
+        let mut content = vec![json!({"type":"input_text","text":"readable worker report"})];
+        if encrypted {
+            content.push(json!({"type":"encrypted_content","encrypted_content":"opaque-secret"}));
+        }
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":"fixture","cwd":"test"}}),
+            json!({"type":"response_item","payload":{"type":"agent_message","author":"/root/worker","recipient":"/root","content":content}}),
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":"UI assistant notification"}}),
+        ];
+        let original = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, &original).unwrap();
+        let session = provider.read_for_export(&reference).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.resume_context_unavailable.is_some(), encrypted);
+        let archive = serde_json::to_string(&session.events).unwrap();
+        assert!(archive.contains("readable worker report"));
+        assert!(archive.contains("from /root/worker to /root"));
+        assert!(!archive.contains("opaque-secret"));
+        assert!(!archive.contains("UI assistant notification"));
+        assert_eq!(provider.read(&reference).is_err(), encrypted);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 fn reasoning_template(dir: &std::path::Path) -> CodexProvider {
     let home = dir.join("codex");
     std::fs::create_dir_all(home.join("sessions")).unwrap();

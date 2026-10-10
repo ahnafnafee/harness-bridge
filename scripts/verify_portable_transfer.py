@@ -32,6 +32,13 @@ def message(text, role="user"):
     return {"type": "message", "role": role, "content": [{"type": "output_text" if role == "assistant" else "input_text", "text": text}]}
 
 
+def agent_mail(text, encrypted=False):
+    content = [{"type": "input_text", "text": text}]
+    if encrypted:
+        content.append({"type": "encrypted_content", "encrypted_content": "hidden-agent-payload"})
+    return {"type": "agent_message", "author": "/root/worker", "recipient": "/root", "content": content}
+
+
 def record(payload, kind="response_item"):
     return {"timestamp": "2026-10-09T00:00:00Z", "type": kind, "payload": payload}
 
@@ -71,18 +78,27 @@ def exercise(bridge, codex, source_rollout):
         for index, session_id in enumerate(source_ids):
             initial = [record({"id": session_id, "timestamp": "2026-10-09T00:00:00Z", "cwd": "source-pc/project",
                                "originator": "Codex Desktop", "parent_thread_id": source_ids[index - 1] if index else None}, "session_meta"),
-                       record(message("superseded archive evidence")), record(call), record(output)]
+                       record(message("superseded archive evidence")), record(agent_mail("archived plaintext report")), record(call), record(output)]
             if index == 0:
-                initial.append(record({"message": "", "replacement_history": [message("retained task"), call, output,
+                initial.append(record({"message": "", "replacement_history": [message("retained task"), agent_mail("retained plaintext report"), agent_mail("readable agent header", encrypted=True), call, output,
                     {"type": "reasoning", "summary": [{"type": "summary_text", "text": "visible reasoning"}], "encrypted_content": "hidden-reasoning-state"},
                     {"type": "compaction", "encrypted_content": "hidden-compaction-state"}]}, "compacted"))
+            elif index == 1:
+                initial.append(record(agent_mail("uncompacted readable header", encrypted=True)))
             elif index == 2:
                 initial.append(record({"message": "legacy compaction without replacement"}, "compacted"))
+            initial.append(record(agent_mail("after-checkpoint plaintext report")))
+            if index == 0:
+                initial.append(record(agent_mail("encrypted tail header", encrypted=True)))
             initial.append(record(message("latest task request")))
             rows(source / f"sessions/rollout-2026-10-09T00-00-00-{session_id}.jsonl", initial)
         source_before = snapshot(source)
 
-        rows(source / "session_index.jsonl", [{"id": source_ids[0], "thread_name": "Encrypted transfer fixture"}])
+        rows(source / "session_index.jsonl", [{"id": source_ids[0], "thread_name": "Stale index title"}])
+        with closing(sqlite3.connect(source / "state_5.sqlite")) as database:
+            database.execute("create table threads(id text,title text,name text)")
+            database.execute("insert into threads values(?,?,?)", (source_ids[0], "Original prompt title", "Encrypted transfer fixture"))
+            database.commit()
         source_before = snapshot(source)
 
         def run(arguments, expect=0):
@@ -99,7 +115,7 @@ def exercise(bridge, codex, source_rollout):
         assert not export.exists()
         report = json.loads(run(command).stdout)
         assert report["version"] == 2 and report["sessions"] == 3
-        assert len(report["resume_context_unavailable"]) == 2
+        assert len(report["resume_context_unavailable"]) == 3
         exported_bytes = export.read_bytes()
         run(command, expect=1)
         assert export.read_bytes() == exported_bytes
@@ -110,6 +126,7 @@ def exercise(bridge, codex, source_rollout):
         assert not receiver_source.exists()
         payload = json.loads(moved.read_text(encoding="utf-8"))["payload"]
         assert "hidden-compaction-state" not in moved.read_text(encoding="utf-8")
+        assert "hidden-agent-payload" not in moved.read_text(encoding="utf-8")
         assert payload["sessions"][2]["parent_session"] == source_ids[1]
         destinations = {
             "codex": ["--codex-home", receiver / "codex"],
@@ -143,6 +160,10 @@ def exercise(bridge, codex, source_rollout):
             assert reread[2]["parent_session"] == reread[1]["id"]
             assert all(not session.get("resume_context_unavailable") for session in reread)
             assert "superseded archive evidence" in roundtrip.read_text(encoding="utf-8")
+            assert "archived plaintext report" in roundtrip.read_text(encoding="utf-8")
+            active = json.dumps(reread[0]["resume_events"])
+            assert "retained plaintext report" in active and "after-checkpoint plaintext report" in active
+            assert "from /root/worker to /root" in active and "Encrypted agent-message payload unavailable" in active
             assert "output evidence output evidence" in roundtrip.read_text(encoding="utf-8")
             assert moved.read_bytes() == exported_bytes
             transferred[target] = roundtrip
@@ -166,12 +187,37 @@ def exercise(bridge, codex, source_rollout):
                 assert sessions[2]["parent_session"] == sessions[1]["id"]
                 assert "output evidence output evidence" in roundtrip.read_text(encoding="utf-8")
                 if destination == "codex":
-                    verify(str(codex), Path(result["location"]), 1_000_000, 45)
+                    verify(str(codex), Path(result["location"]), 1_000_000, 45, expected_texts=("retained plaintext report", "after-checkpoint plaintext report"))
             print(f"PASS: {source_provider} export imports and reads back through all four destination harnesses")
         assert snapshot(source) == source_before
-        for outcome in [codex_outcome, codex_outcome["extra"]["child_sessions"][1]]:
-            verify(str(codex), Path(outcome["location"]), 1_000_000, 45)
+        for outcome in [codex_outcome, *codex_outcome["extra"]["child_sessions"]]:
+            verify(str(codex), Path(outcome["location"]), 1_000_000, 45, expected_texts=("after-checkpoint plaintext report",))
         print("PASS: real Codex app-server resumes checkpoint and archive recovery, including tool continuation")
+
+        plain_id = "00000000-0000-7000-8000-000000000004"
+        rows(source / f"sessions/rollout-2026-10-09T00-00-00-{plain_id}.jsonl", [
+            record({"id": plain_id, "timestamp": "2026-10-09T00:00:00Z", "cwd": "source-pc/project"}, "session_meta"),
+            record(agent_mail("plaintext archive report")),
+            record({"replacement_history": [message("plain task"), agent_mail("plaintext retained report")]}, "compacted"),
+            record(agent_mail("plaintext later report")),
+        ])
+        plain_bundle = receiver / "plaintext-agent-mail.hbridge.json"
+        plain_report = json.loads(run(["export", plain_id, "--from", "codex", "--codex-home", source,
+                                       "--output", plain_bundle]).stdout)
+        assert plain_report["version"] == 1 and not plain_report["resume_context_unavailable"]
+        for destination, flags in destinations.items():
+            outcome = json.loads(run(["import", plain_bundle, "--to", destination, *flags]).stdout)
+            assert not outcome["extra"]["resume_context_policy"].get("rebuilt")
+            readback = receiver / f"plaintext-{destination}.hbridge.json"
+            run(["export", outcome["native_id"], "--from", destination, *flags, "--output", readback])
+            data = json.loads(readback.read_text(encoding="utf-8"))["payload"]["sessions"][0]
+            assert "plaintext archive report" in json.dumps(data["events"])
+            active = json.dumps(data["resume_events"])
+            assert "plaintext retained report" in active and "plaintext later report" in active
+            if destination == "codex":
+                verify(str(codex), Path(outcome["location"]), 1_000_000, 45,
+                       expected_texts=("plaintext retained report", "plaintext later report"))
+        print("PASS: plaintext agent mail exports as v1 and imports into all four harnesses without reconstruction")
 
         if source_rollout:
             real_source = base / "real-source-copy"

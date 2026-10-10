@@ -395,6 +395,7 @@ impl super::Provider for DshProvider {
             updated_ms,
             events: evs,
             resume_events,
+            resume_context_unavailable: None,
         })
     }
 

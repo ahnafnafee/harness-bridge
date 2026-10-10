@@ -1,4 +1,4 @@
-# Portable session format, version 1
+# Portable session format, versions 1 and 2
 
 The `export` command writes a standalone UTF-8 JSON file, conventionally named `*.hbridge.json`. The receiving machine's `import` command converts it through the same native writers as a local migration. The extension is a convention; detection uses the document's format and version fields.
 
@@ -15,7 +15,7 @@ The source and destination can each be `dsh`, `codex`, `claude`, `zcode`, or `ag
 | Field | Meaning |
 | :-- | :-- |
 | `format` | Exactly `harness-bridge-session`. |
-| `version` | Integer `1`. Unsupported versions fail before native writes. |
+| `version` | Integer `1` for ordinary exports, or `2` for exports with unavailable resume context. Unsupported versions fail before native writes. |
 | `exported_at` | RFC 3339 UTC timestamp identifying when the file was made. |
 | `sha256` | Lowercase hexadecimal SHA-256 of the normalized JSON payload described below. |
 | `payload.root_session_id` | The source-native id of the selected root. |
@@ -24,6 +24,10 @@ The source and destination can each be `dsh`, `codex`, `claude`, `zcode`, or `ag
 Session and event fields follow [the shared model](../src/ir.rs). The schema retains source provider/id, title, cwd, preset, origin, parent id, creation/update times, and timestamped events. Events represent messages, visible reasoning text, tool calls/results, turn boundaries, persisted compaction summaries, and supported structured source metadata.
 
 `events` is the full normalized archive. When present, `resume_events` is the separate retained model context. An absent field means the full archive supplies context; an empty array means the source retained no events. Export preserves that distinction and does not prune or enforce a destination context budget. Import applies its selected budget to each family member before any native write, and pruning changes only the imported resume context. The transfer file stays unchanged.
+
+Version 2 adds the optional `resume_context_unavailable` reason on each session. If present, the complete retained context cannot be reconstructed. Any `resume_events` then contains only readable items from the latest checkpoint and later turns, available as a recovery seed. Import rejects the entire family before writes unless `--rebuild-resume-context` is supplied. The receiver uses that seed, or the readable archive when no seed exists, adds a recovery notice, and runs the usual context budget/pruning preflight. Encrypted compaction/hidden reasoning is never decoded or fabricated. Recovery may lose information available only in encrypted state, and archive fallback can include superseded history.
+
+These files require harness-bridge 0.3.1 or later on both machines. Export emits version 2 only if a family member has unavailable context, so 0.3.0 readers reject such files instead of silently replaying incomplete context. Version 1 cannot carry `resume_context_unavailable`; normal version 1 exports and imports remain supported.
 
 ## Checksum
 

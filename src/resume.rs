@@ -5,15 +5,58 @@ use serde_json::{json, Value};
 
 pub const DEFAULT_MAX_CHARS: usize = 750_000;
 
+#[derive(Clone, Copy, Default)]
+pub struct Options {
+    pub prune: bool,
+    pub rebuild: bool,
+}
+
 fn size(events: &[Event]) -> anyhow::Result<usize> {
     Ok(serde_json::to_string(events)?.chars().count())
 }
 
-pub fn prepare(session: &mut Session, max_chars: usize, prune: bool) -> anyhow::Result<Value> {
+pub fn prepare(session: &mut Session, max_chars: usize, options: Options) -> anyhow::Result<Value> {
     anyhow::ensure!(
         max_chars >= 1024,
         "--resume-max-chars must be at least 1024"
     );
+    let mut candidate = session.clone();
+    let unavailable = candidate.resume_context_unavailable.take();
+    if let Some(reason) = &unavailable {
+        anyhow::ensure!(options.rebuild,
+            "retained resume context is unavailable: {reason}. Use --rebuild-resume-context to reconstruct context from readable checkpoint items or the transcript. Encrypted hidden state cannot be recovered; no destination was written");
+        let reconstruction_source = if candidate.resume_events.is_some() {
+            "readable-checkpoint"
+        } else {
+            "archive"
+        };
+        let notice = Event::at(Some(session.updated_ms), EventKind::Message {
+            role: Role::User,
+            text: format!("Migration context recovery notice: the source's complete retained model context was unavailable ({reason}). This context was rebuilt from {reconstruction_source}; archive reconstruction includes history superseded by compaction. Encrypted hidden state was not recovered. The full readable transcript is preserved. Verify the current task, decisions and tool results before acting."),
+            source_kind: Some("migration-context-recovery".into()),
+        });
+        let mut context = candidate
+            .resume_events
+            .take()
+            .unwrap_or_else(|| candidate.events.clone());
+        context.insert(0, notice);
+        candidate.resume_events = Some(context);
+    }
+    let mut report = prepare_context(&mut candidate, max_chars, options.prune)?;
+    if let Some(reason) = unavailable {
+        report["reconstruction_source"] = json!(if session.resume_events.is_some() {
+            "readable-checkpoint"
+        } else {
+            "archive"
+        });
+        report["rebuilt"] = json!(true);
+        report["source_context_unavailable"] = json!(reason);
+    }
+    *session = candidate;
+    Ok(report)
+}
+
+fn prepare_context(session: &mut Session, max_chars: usize, prune: bool) -> anyhow::Result<Value> {
     let source = session.resume_events.as_ref().unwrap_or(&session.events);
     let before = size(source)?;
     if before <= max_chars {
@@ -89,6 +132,7 @@ mod tests {
             updated_ms: 0,
             events,
             resume_events: None,
+            resume_context_unavailable: None,
         }
     }
 
@@ -101,9 +145,17 @@ mod tests {
                 text: "large output ".repeat(10000),
             },
         )]);
-        assert!(prepare(&mut s, 2000, false).is_err());
+        assert!(prepare(&mut s, 2000, Options::default()).is_err());
         assert!(s.resume_events.is_none());
-        let report = prepare(&mut s, 2000, true).unwrap();
+        let report = prepare(
+            &mut s,
+            2000,
+            Options {
+                prune: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(report["pruned"], true);
         assert!(size(s.resume_events.as_ref().unwrap()).unwrap() <= 2000);
         assert!(serde_json::to_string(&s.events)
@@ -138,7 +190,15 @@ mod tests {
                 },
             ),
         ]);
-        prepare(&mut s, 2000, true).unwrap();
+        prepare(
+            &mut s,
+            2000,
+            Options {
+                prune: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let context = serde_json::to_string(s.resume_events.as_ref().unwrap()).unwrap();
         assert!(context.contains("protected request"));
         assert!(context.contains("keep"));
@@ -156,7 +216,95 @@ mod tests {
                 source_kind: None,
             },
         )]);
-        assert!(prepare(&mut s, 2000, true).is_err());
+        assert!(prepare(
+            &mut s,
+            2000,
+            Options {
+                prune: true,
+                ..Default::default()
+            }
+        )
+        .is_err());
         assert!(s.resume_events.is_none());
+    }
+
+    #[test]
+    fn unavailable_context_requires_recovery_and_failed_preflight_is_atomic() {
+        let mut s = session(vec![Event::at(
+            None,
+            EventKind::Message {
+                role: Role::User,
+                text: "protected ".repeat(3000),
+                source_kind: None,
+            },
+        )]);
+        s.resume_context_unavailable = Some("encrypted checkpoint".into());
+        let before = serde_json::to_value(&s).unwrap();
+        assert!(prepare(&mut s, DEFAULT_MAX_CHARS, Options::default())
+            .unwrap_err()
+            .to_string()
+            .contains("--rebuild-resume-context"));
+        assert!(prepare(
+            &mut s,
+            2000,
+            Options {
+                prune: true,
+                rebuild: true
+            }
+        )
+        .is_err());
+        assert_eq!(serde_json::to_value(&s).unwrap(), before);
+        let report = prepare(
+            &mut s,
+            DEFAULT_MAX_CHARS,
+            Options {
+                rebuild: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report["reconstruction_source"], "archive");
+        assert!(s.resume_context_unavailable.is_none());
+        assert_eq!(serde_json::to_value(&s.events).unwrap(), before["events"]);
+        assert!(serde_json::to_string(&s.resume_events)
+            .unwrap()
+            .contains("recovery notice"));
+    }
+
+    #[test]
+    fn explicit_recovery_prefers_checkpoint_and_does_not_replace_known_context() {
+        let mut s = session(vec![Event::at(
+            None,
+            EventKind::Message {
+                role: Role::User,
+                text: "superseded ".repeat(10000),
+                source_kind: None,
+            },
+        )]);
+        s.resume_events = Some(vec![Event::at(
+            None,
+            EventKind::Message {
+                role: Role::User,
+                text: "current task".into(),
+                source_kind: None,
+            },
+        )]);
+        let before = serde_json::to_value(&s).unwrap();
+        let options = Options {
+            rebuild: true,
+            ..Default::default()
+        };
+        assert!(prepare(&mut s, 2000, options)
+            .unwrap()
+            .get("rebuilt")
+            .is_none());
+        assert_eq!(serde_json::to_value(&s).unwrap(), before);
+        s.resume_context_unavailable = Some("encrypted checkpoint".into());
+        let report = prepare(&mut s, 2000, options).unwrap();
+        assert_eq!(report["reconstruction_source"], "readable-checkpoint");
+        assert!(!serde_json::to_string(&s.resume_events)
+            .unwrap()
+            .contains("superseded superseded"));
+        assert_eq!(serde_json::to_value(&s.events).unwrap(), before["events"]);
     }
 }

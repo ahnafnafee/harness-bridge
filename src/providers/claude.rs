@@ -286,6 +286,7 @@ impl super::Provider for ClaudeProvider {
             updated_ms,
             events: evs,
             resume_events,
+            resume_context_unavailable: None,
         })
     }
 

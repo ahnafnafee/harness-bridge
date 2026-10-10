@@ -83,10 +83,15 @@ pub struct Session {
     pub created_ms: i64,
     pub updated_ms: i64,
     pub events: Vec<Event>,
-    /// Current model context after the source harness's replacements/pruning.
+    /// Current model context after the source harness's replacements/pruning;
+    /// when unavailable is set, only readable checkpoint items for explicit recovery.
     /// `events` remains the complete transcript for display and archival fidelity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_events: Option<Vec<Event>>,
+    /// Readable archive exists, but the source checkpoint cannot supply portable
+    /// model context. Import must fail until explicit reconstruction is requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_context_unavailable: Option<String>,
 }
 
 impl Session {

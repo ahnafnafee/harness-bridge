@@ -792,6 +792,7 @@ impl super::Provider for AgyProvider {
             updated_ms: updated_ms.max(created_ms),
             events,
             resume_events,
+            resume_context_unavailable: None,
         })
     }
 
@@ -1170,6 +1171,7 @@ mod tests {
             updated_ms: 1_791_417_600_000,
             events: vec![message("obsolete archive"), message("current task")],
             resume_events: Some(vec![message("current task")]),
+            resume_context_unavailable: None,
         };
         let outcome = provider.write(&s, &WriteOpts::default()).unwrap();
         let root = SessionRef {
@@ -1207,7 +1209,7 @@ mod tests {
             &WriteOpts::default(),
             true,
             750000,
-            false,
+            crate::resume::Options::default(),
         )
         .unwrap();
         assert_eq!(

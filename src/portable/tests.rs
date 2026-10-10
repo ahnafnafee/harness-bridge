@@ -38,6 +38,7 @@ fn message(text: &str) -> Event {
 fn session(source: &str, id: &str, parent: Option<&str>) -> Session {
     Session {
         source: source.into(),
+        resume_context_unavailable: None,
         id: id.into(),
         parent_session: parent.map(str::to_string),
         title: Some("Portable session Ω".into()),
@@ -252,7 +253,10 @@ fn portable_family_preflight_and_dry_run_do_not_write_or_change_bundle() {
         &WriteOpts::default(),
         true,
         2000,
-        true
+        crate::resume::Options {
+            prune: true,
+            ..Default::default()
+        }
     )
     .is_err());
     assert!(!target_path.exists());
@@ -266,12 +270,125 @@ fn portable_family_preflight_and_dry_run_do_not_write_or_change_bundle() {
         },
         true,
         100000,
-        false,
+        crate::resume::Options::default(),
     )
     .unwrap();
     assert_eq!(preview.extra["child_sessions"].as_array().unwrap().len(), 1);
     assert!(!target_path.exists());
     assert_eq!(std::fs::read(&file).unwrap(), before);
+}
+
+#[test]
+fn codex_opaque_family_exports_archive_and_requires_explicit_recovery() {
+    let temp = Temp::new();
+    let source_home = temp.0.join("source-codex");
+    std::fs::create_dir_all(source_home.join("sessions")).unwrap();
+    let native_message = |text| json!({"type":"message","role":"user","content":[{"type":"input_text","text":text}]});
+    let mut originals = Vec::new();
+    for (id, parent, checkpoint) in [
+        (
+            "00000000-0000-7000-8000-000000000001",
+            None,
+            json!({"replacement_history":[native_message("readable checkpoint"),{"type":"compaction","encrypted_content":"secret-opaque-state"}]}),
+        ),
+        (
+            "00000000-0000-7000-8000-000000000002",
+            Some("00000000-0000-7000-8000-000000000001"),
+            json!({"message":"legacy summary without replacement"}),
+        ),
+    ] {
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":id,"timestamp":"2026-10-09T00:00:00Z","originator":"Codex Desktop","cwd":"source/project","parent_thread_id":parent}}),
+            json!({"type":"response_item","payload":native_message("superseded but archived")}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"read","call_id":"original-call","input":"original arguments"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"original-call","output":[{"type":"text","text":"original output"}]}}),
+            json!({"type":"compacted","payload":checkpoint}),
+            json!({"type":"response_item","payload":native_message("latest request")}),
+        ];
+        let path = source_home
+            .join("sessions")
+            .join(format!("rollout-{id}.jsonl"));
+        let bytes = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, &bytes).unwrap();
+        originals.push((path, bytes));
+    }
+    let source = CodexProvider::new(source_home);
+    let root = source
+        .discover()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == "00000000-0000-7000-8000-000000000001")
+        .unwrap();
+    assert!(source.read(&root).is_err());
+    let original = Bundle::collect(&source, root, true).unwrap();
+    assert_eq!(original.version, 2);
+    assert_eq!(original.payload.sessions.len(), 2);
+    let file = temp.0.join("transfer.hbridge.json");
+    let report = original.save(&file, false).unwrap();
+    assert_eq!(
+        report["resume_context_unavailable"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("secret-opaque-state"));
+    assert!(text.contains("original arguments"));
+    assert!(text.contains("original output"));
+    let loaded = Bundle::load(&file).unwrap();
+    let destination_home = temp.0.join("destination");
+    let destination = DshProvider::new(destination_home.clone());
+    let error = crate::family::migrate(
+        &loaded,
+        &destination,
+        loaded.root(),
+        &WriteOpts::default(),
+        true,
+        100000,
+        crate::resume::Options::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("--rebuild-resume-context"));
+    assert!(!destination_home.exists());
+    let outcome = crate::family::migrate(
+        &loaded,
+        &destination,
+        loaded.root(),
+        &WriteOpts::default(),
+        true,
+        100000,
+        crate::resume::Options {
+            rebuild: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.extra["resume_context_policy"]["reconstruction_source"],
+        "readable-checkpoint"
+    );
+    assert_eq!(
+        outcome.extra["child_sessions"][0]["extra"]["resume_context_policy"]
+            ["reconstruction_source"],
+        "archive"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    for (path, bytes) in originals {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), bytes);
+    }
+    let mut downgraded: Value = serde_json::from_str(&text).unwrap();
+    downgraded["version"] = json!(1);
+    std::fs::write(&file, downgraded.to_string()).unwrap();
+    assert!(Bundle::load(&file)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("requires portable format version 2"));
 }
 
 #[test]
@@ -318,7 +435,10 @@ fn portable_import_prunes_only_active_context_and_keeps_source_paths() {
         },
         true,
         2048,
-        true,
+        crate::resume::Options {
+            prune: true,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert_eq!(outcome.extra["resume_context_policy"]["pruned"], true);
@@ -419,7 +539,7 @@ fn portable_nested_children_use_receiver_paths_and_depth() {
             &WriteOpts::default(),
             true,
             750000,
-            false,
+            crate::resume::Options::default(),
         )
         .unwrap();
         let children = outcome.extra["child_sessions"].as_array().unwrap();

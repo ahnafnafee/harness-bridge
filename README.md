@@ -113,6 +113,15 @@ Both commands support all five harnesses. Import reads the transfer file without
 
 If import reports an oversized retained context, add `--prune-resume-context` to the preview/import commands to shorten reasoning and tool outputs while keeping the archive, or compact the source and export again.
 
+Codex sessions with encrypted compaction can be exported with version 0.3.1 or later. The file preserves readable history and marks the complete resume context as unavailable. Import requires explicit recovery:
+
+```sh
+harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --rebuild-resume-context --prune-resume-context --dry-run
+harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --rebuild-resume-context --prune-resume-context
+```
+
+Recovery uses readable items from the latest saved checkpoint and later turns when available, otherwise the readable transcript. It adds a recovery notice, preserves the full normalized archive, and still enforces the context budget. It cannot recover encrypted state or guarantee that decisions held only there survive. These exports use format version 2, which requires 0.3.1 or later on the receiving PC; ordinary exports remain compatible with format version 1.
+
 Export refuses to overwrite an existing file; `export --dry-run` reports its counts without creating it. Import validates the format version, payload checksum, and family graph before converting. The receiving harness must already be initialized: Codex needs a local top-level Desktop session as a template, ZCode needs its database, and agy needs a template conversation. Existing provider constraints still apply.
 
 The file carries conversation data, including recorded paths and text, rather than project files, attachments, credentials from harness settings, or executable hidden model state. Move the project separately. `--cwd` changes the new base directory while paths inside the history remain as recorded. Reimporting uses deterministic destination ids and can overwrite later destination turns, as with `migrate`.
@@ -141,6 +150,7 @@ Messages, reasoning, tool pairs, timestamps, and stored summaries pass through t
 | `--dry-run` | Read and convert without writing. Required target templates are still read. |
 | `--resume-max-chars` | Retained-context character budget; defaults to 750,000. This is a preflight limit, not a token count. |
 | `--prune-resume-context` | Explicitly allow shortening reasoning and tool outputs to fit the budget. Preserve the complete normalized archive, prompts, assistant text, tool arguments and call ids. |
+| `--rebuild-resume-context` | Import/migrate only: explicitly reconstruct unavailable context from readable checkpoint items or the transcript. Encrypted state is omitted with a recovery notice; budgets still apply. |
 | `--include-subagents` | Import saved children recursively, preflight the entire family, and remap parent links. |
 | `--preset` | Copy a DSH session to an installed directory preset; valid only with `--from dsh --to dsh`. |
 | `--dsh-home`, `--codex-home`, `--claude-home` | Override a provider's home directory, including for isolated validation. |

@@ -2,24 +2,75 @@ use super::{content_texts, join_text, parse_iso_ms};
 use crate::ir::{Event, EventKind, Role};
 use serde_json::Value;
 
+#[derive(Debug)]
+pub(super) struct UnavailableContext {
+    pub reason: &'static str,
+    pub readable_events: Option<Vec<Event>>,
+}
+
+impl UnavailableContext {
+    fn new(reason: &'static str) -> Self {
+        Self {
+            reason,
+            readable_events: None,
+        }
+    }
+}
+
+impl std::fmt::Display for UnavailableContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason)
+    }
+}
+
+impl std::error::Error for UnavailableContext {}
+
 fn decode(item: &Value, ts: Option<i64>) -> anyhow::Result<Option<Event>> {
     let kind = match item.get("type").and_then(Value::as_str) {
         Some("message") => EventKind::Message {
-            role:match item["role"].as_str() {Some("user")=>Role::User,Some("assistant")=>Role::Assistant,_=>Role::Developer},
-            text:join_text(&content_texts(item.get("content"))), source_kind:None,
+            role: match item["role"].as_str() {
+                Some("user") => Role::User,
+                Some("assistant") => Role::Assistant,
+                _ => Role::Developer,
+            },
+            text: join_text(&content_texts(item.get("content"))),
+            source_kind: None,
         },
-        Some("reasoning") => EventKind::Reasoning {text:join_text(&content_texts(item.get("summary")))},
+        Some("reasoning") => EventKind::Reasoning {
+            text: join_text(&content_texts(item.get("summary"))),
+        },
         Some("function_call" | "custom_tool_call") => EventKind::ToolCall {
-            call_id:item["call_id"].as_str().ok_or_else(|| anyhow::anyhow!("Codex context tool call has no call_id"))?.into(),
-            name:item["name"].as_str().unwrap_or("unknown").into(),
-            arguments:item.get("arguments").or_else(|| item.get("input")).and_then(Value::as_str).unwrap_or("{}").into(),
+            call_id: item["call_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Codex context tool call has no call_id"))?
+                .into(),
+            name: item["name"].as_str().unwrap_or("unknown").into(),
+            arguments: item
+                .get("arguments")
+                .or_else(|| item.get("input"))
+                .and_then(Value::as_str)
+                .unwrap_or("{}")
+                .into(),
         },
         Some("function_call_output" | "custom_tool_call_output") => EventKind::ToolResult {
-            call_id:item["call_id"].as_str().ok_or_else(|| anyhow::anyhow!("Codex context tool result has no call_id"))?.into(),
-            text:item["output"].as_str().map(str::to_string).unwrap_or_else(|| join_text(&content_texts(item.get("output")))),
+            call_id: item["call_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Codex context tool result has no call_id"))?
+                .into(),
+            text: item["output"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| join_text(&content_texts(item.get("output")))),
         },
-        Some("compaction") => anyhow::bail!("encrypted Codex compaction cannot be migrated without a persisted plaintext replacement_history"),
-        Some(other) => anyhow::bail!("unsupported Codex resume-context item {other:?}; refusing to discard active context"),
+        Some("compaction") => {
+            return Err(UnavailableContext::new(
+                "encrypted Codex compaction has no portable plaintext replacement_history",
+            )
+            .into())
+        }
+        Some(other) => anyhow::bail!(
+            "unsupported Codex resume-context item {other:?}; refusing to discard active context"
+        ),
         None => anyhow::bail!("Codex resume-context item has no type"),
     };
     Ok(Some(Event::at(ts, kind)))
@@ -41,31 +92,47 @@ pub(super) fn resume_events(text: &str) -> anyhow::Result<Option<Vec<Event>>> {
     let Some(latest) = records.iter().rposition(checkpoint) else {
         return Ok(None);
     };
-    let mut context = None;
+    let mut context = Vec::new();
+    let mut unavailable = None;
+    let mut readable_checkpoint = false;
     for record in &records[latest..] {
         let ts = record["timestamp"].as_str().and_then(parse_iso_ms);
         let payload = &record["payload"];
         if checkpoint(record) {
-            let history = payload.get("replacement_history").and_then(Value::as_array)
-                .ok_or_else(|| anyhow::anyhow!("Codex checkpoint has no plaintext replacement_history; refusing to replay the entire archive"))?;
-            context = Some(
-                history
-                    .iter()
-                    .map(|item| decode(item, ts))
-                    .collect::<anyhow::Result<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>(),
-            );
-        } else if record["type"] == "response_item" {
-            if let Some(active) = &mut context {
-                if let Some(event) = decode(payload, ts)? {
-                    active.push(event)
+            if let Some(history) = payload.get("replacement_history").and_then(Value::as_array) {
+                readable_checkpoint = true;
+                for item in history {
+                    match decode(item, ts) {
+                        Ok(Some(event)) => context.push(event),
+                        Ok(None) => {}
+                        Err(error) if error.is::<UnavailableContext>() => unavailable = Some(error),
+                        Err(error) => return Err(error),
+                    }
                 }
+            } else {
+                unavailable = Some(
+                    UnavailableContext::new(
+                        "Codex checkpoint has no plaintext replacement_history",
+                    )
+                    .into(),
+                );
+            }
+        } else if record["type"] == "response_item" {
+            // An opaque checkpoint must not hide later unsupported/malformed
+            // items by short-circuiting decoding before the tail is inspected.
+            if let Some(event) = decode(payload, ts)? {
+                context.push(event)
             }
         }
     }
-    Ok(context)
+    if let Some(error) = unavailable {
+        let mut issue = error.downcast::<UnavailableContext>()?;
+        if readable_checkpoint && !context.is_empty() {
+            issue.readable_events = Some(context);
+        }
+        return Err(issue.into());
+    }
+    Ok(Some(context))
 }
 
 #[cfg(test)]
@@ -108,6 +175,21 @@ mod tests {
             assert!(
                 resume_events(&json!({"type":"compacted","payload":payload}).to_string()).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn opaque_checkpoint_does_not_mask_unsupported_or_malformed_items() {
+        for item in [
+            json!({"type":"hosted_tool"}),
+            json!({"type":"function_call_output","output":"missing id"}),
+        ] {
+            let text = [
+                json!({"type":"compacted","payload":{"replacement_history":[{"type":"compaction","encrypted_content":"opaque"}, item.clone()]}}),
+                json!({"type":"response_item","payload":item}),
+            ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+            let error = resume_events(&text).unwrap_err();
+            assert!(!error.is::<UnavailableContext>());
         }
     }
 }

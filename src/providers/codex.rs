@@ -54,6 +54,34 @@ impl CodexProvider {
         CodexProvider { codex_home }
     }
 
+    fn session_titles(&self) -> std::collections::HashMap<String, String> {
+        let mut titles = std::collections::HashMap::new();
+        if let Ok(index) = std::fs::read_to_string(self.codex_home.join("session_index.jsonl")) {
+            for line in index.lines() {
+                if let Ok(entry) = serde_json::from_str::<Value>(line) {
+                    if let (Some(id), Some(title)) =
+                        (entry["id"].as_str(), entry["thread_name"].as_str())
+                    {
+                        titles.insert(id.to_string(), title.to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(connection) = rusqlite::Connection::open_with_flags(
+            self.codex_home.join("state_5.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            if let Ok(mut statement) = connection.prepare("select id, title from threads") {
+                if let Ok(rows) = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    titles.extend(rows.filter_map(Result::ok));
+                }
+            }
+        }
+        titles
+    }
+
     /// Newest top-level Codex Desktop rollout: template for meta + turn_context.
     fn find_desktop_reference(&self) -> anyhow::Result<(Value, Value, i64)> {
         let mut files: Vec<_> = glob::walk(&self.codex_home)?;
@@ -143,71 +171,8 @@ mod glob {
     }
 }
 
-impl super::Provider for CodexProvider {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn name(&self) -> &'static str {
-        "codex"
-    }
-
-    fn discover(&self) -> anyhow::Result<Vec<SessionRef>> {
-        let mut refs = Vec::new();
-        for f in glob::walk(&self.codex_home.join("sessions"))? {
-            let name = f
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let id = name
-                .trim_start_matches("rollout-")
-                .trim_end_matches(".jsonl")
-                .rsplit('-')
-                .take(5)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("-");
-            if id.len() != 36 || id.chars().filter(|c| *c == '-').count() != 4 {
-                continue;
-            }
-            let meta_line = match glob::read_first_line(&f) {
-                Some(l) => l,
-                None => continue,
-            };
-            let Ok(meta_line) = serde_json::from_str::<Value>(&meta_line) else {
-                continue;
-            };
-            let meta = meta_line.get("payload").cloned().unwrap_or(Value::Null);
-            if meta.get("cwd").is_none() {
-                continue;
-            }
-            let updated = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
-            let updated_ms = updated.map(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            });
-            refs.push(SessionRef {
-                provider: "codex".into(),
-                id: id.clone(),
-                title: None,
-                cwd: meta.get("cwd").and_then(|c| c.as_str()).map(str::to_string),
-                created_ms: meta
-                    .get("timestamp")
-                    .and_then(|t| t.as_str())
-                    .and_then(parse_iso_ms),
-                updated_ms,
-                locator: f.to_string_lossy().to_string(),
-                migrated: false,
-            });
-        }
-        Ok(refs)
-    }
-
-    fn read(&self, r: &SessionRef) -> anyhow::Result<Session> {
+impl CodexProvider {
+    fn read_rollout(&self, r: &SessionRef, export: bool) -> anyhow::Result<Session> {
         let text = read_maybe_zstd(Path::new(&r.locator))?;
         let mut lines = text.lines();
         let meta_line: Value = serde_json::from_str(
@@ -297,7 +262,7 @@ impl super::Provider for CodexProvider {
                             evs.push(Event::at(ts, EventKind::Reasoning { text }));
                         }
                     }
-                    Some("function_call") => {
+                    Some("function_call" | "custom_tool_call") => {
                         if let Some(cid) = p.get("call_id").and_then(|c| c.as_str()) {
                             evs.push(Event::at(
                                 ts,
@@ -310,6 +275,7 @@ impl super::Provider for CodexProvider {
                                         .to_string(),
                                     arguments: p
                                         .get("arguments")
+                                        .or_else(|| p.get("input"))
                                         .and_then(|a| a.as_str())
                                         .unwrap_or("{}")
                                         .to_string(),
@@ -317,13 +283,13 @@ impl super::Provider for CodexProvider {
                             ));
                         }
                     }
-                    Some("function_call_output") => {
+                    Some("function_call_output" | "custom_tool_call_output") => {
                         if let Some(cid) = p.get("call_id").and_then(|c| c.as_str()) {
                             let text = p
                                 .get("output")
                                 .and_then(|o| o.as_str())
-                                .unwrap_or_default()
-                                .to_string();
+                                .map(str::to_string)
+                                .unwrap_or_else(|| join_text(&content_texts(p.get("output"))));
                             match result_idx.get(cid) {
                                 Some(&i) => {
                                     if let EventKind::ToolResult { text: prev, .. } =
@@ -345,7 +311,7 @@ impl super::Provider for CodexProvider {
                             }
                         }
                     }
-                    Some("compacted") => {
+                    Some("compacted" | "compaction") => {
                         evs.push(Event::at(
                             ts,
                             EventKind::Compaction {
@@ -387,6 +353,14 @@ impl super::Provider for CodexProvider {
             evs.sort_by_key(|e| e.time_ms.unwrap_or(0));
         }
 
+        let (resume_events, resume_context_unavailable) = match context::resume_events(&text) {
+            Ok(events) => (events, None),
+            Err(error) if export && error.is::<context::UnavailableContext>() => {
+                let issue = error.downcast::<context::UnavailableContext>()?;
+                (issue.readable_events, Some(issue.reason.to_string()))
+            }
+            Err(error) => return Err(error.context("cannot reconstruct retained context; export the readable archive or use --rebuild-resume-context for explicit transcript reconstruction")),
+        };
         Ok(Session {
             source: "codex".into(),
             id: meta
@@ -411,8 +385,83 @@ impl super::Provider for CodexProvider {
             created_ms,
             updated_ms,
             events: evs,
-            resume_events: context::resume_events(&text)?,
+            resume_events,
+            resume_context_unavailable,
         })
+    }
+}
+
+impl super::Provider for CodexProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "codex"
+    }
+
+    fn discover(&self) -> anyhow::Result<Vec<SessionRef>> {
+        let mut refs = Vec::new();
+        let titles = self.session_titles();
+        for f in glob::walk(&self.codex_home.join("sessions"))? {
+            let name = f
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let id = name
+                .trim_start_matches("rollout-")
+                .trim_end_matches(".jsonl")
+                .rsplit('-')
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("-");
+            if id.len() != 36 || id.chars().filter(|c| *c == '-').count() != 4 {
+                continue;
+            }
+            let meta_line = match glob::read_first_line(&f) {
+                Some(l) => l,
+                None => continue,
+            };
+            let Ok(meta_line) = serde_json::from_str::<Value>(&meta_line) else {
+                continue;
+            };
+            let meta = meta_line.get("payload").cloned().unwrap_or(Value::Null);
+            if meta.get("cwd").is_none() {
+                continue;
+            }
+            let updated = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
+            let updated_ms = updated.map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            });
+            refs.push(SessionRef {
+                provider: "codex".into(),
+                id: id.clone(),
+                title: titles.get(&id).cloned(),
+                cwd: meta.get("cwd").and_then(|c| c.as_str()).map(str::to_string),
+                created_ms: meta
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(parse_iso_ms),
+                updated_ms,
+                locator: f.to_string_lossy().to_string(),
+                migrated: false,
+            });
+        }
+        Ok(refs)
+    }
+
+    fn read(&self, r: &SessionRef) -> anyhow::Result<Session> {
+        self.read_rollout(r, false)
+    }
+
+    fn read_for_export(&self, r: &SessionRef) -> anyhow::Result<Session> {
+        self.read_rollout(r, true)
     }
 
     fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {

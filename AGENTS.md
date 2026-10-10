@@ -34,6 +34,7 @@ harness-bridge import session.hbridge.json --to codex --cwd "D:\\project" --dry-
 Conversion flags: `--cwd` (target base directory), `--name` (display title), `--dry-run`,
 `--resume-max-chars` (normalized context character budget, default 750,000),
 `--prune-resume-context` (explicit output shortening with the archive preserved),
+`--rebuild-resume-context` (import/migrate: explicit recovery of unavailable context),
 `--include-subagents` (saved children with translated parent links), plus home overrides
 `--dsh-home`, `--codex-home`, `--claude-home`, `--zcode-db`, `--agy-dir` (use these for testing against
 throwaway homes; see Testing below).
@@ -87,6 +88,11 @@ The port is idempotent: same source + preset -> same new session id.
 - **Resume preflight** applies across providers. Character budgets are not model token limits; smaller models
   may need a lower budget. Incomplete or unsupported checkpoints fail explicitly. Raw DSH preset copies retain
   their existing context semantics and do not use normalized context pruning.
+- **Encrypted Codex compaction**: 0.3.1 exports readable archives even when complete retained context is unavailable.
+  Such files use format v2 and require 0.3.1 on the receiving PC. Import/migrate requires explicit
+  `--rebuild-resume-context`, using readable checkpoint items and later turns or the archive as fallback.
+  A recovery notice describes missing hidden state. Budgets/pruning still apply; encrypted state cannot be recovered,
+  and decisions present only there can be lost. Unknown/malformed active items still fail rather than being discarded.
 - **Saved child links** use native destination fields where supported; agy uses the migration archive and ZCode
   uses a migration entry on schemas without `parent_id`. These imports do not start agents or translate tools.
 - **Reasoning** is retained in the normalized archive. Active reasoning in Codex writes becomes labeled assistant

@@ -13,6 +13,12 @@ pub trait Provider {
 
     fn read(&self, r: &SessionRef) -> anyhow::Result<Session>;
 
+    /// Archive export can defer a known unavailable checkpoint to import.
+    /// Other read/parse errors must still fail rather than inventing history.
+    fn read_for_export(&self, r: &SessionRef) -> anyhow::Result<Session> {
+        self.read(r)
+    }
+
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome>;
 
     /// Direct children only; migration traverses the family with cycle checks.

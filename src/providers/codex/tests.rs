@@ -101,6 +101,7 @@ fn imported_reasoning_uses_text_context_without_losing_archive() {
                 created_ms: 1000,
                 updated_ms: 1007,
                 events: events.clone(),
+                resume_context_unavailable: None,
                 resume_events: checkpointed.then(|| {
                     events
                         .iter()

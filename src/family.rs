@@ -14,7 +14,7 @@ pub fn migrate(
     opts: &WriteOpts,
     include_children: bool,
     max_chars: usize,
-    prune: bool,
+    resume_options: crate::resume::Options,
 ) -> anyhow::Result<WriteOutcome> {
     let mut queue = VecDeque::from([(root, None::<String>, 0_usize)]);
     let mut seen = HashSet::new();
@@ -36,7 +36,12 @@ pub fn migrate(
                 queue.push_back((child, Some(reference.id.clone()), depth + 1));
             }
         }
-        let mut session = source.read(&reference).map_err(|error| {
+        let read = if resume_options.rebuild {
+            source.read_for_export(&reference)
+        } else {
+            source.read(&reference)
+        };
+        let mut session = read.map_err(|error| {
             anyhow::anyhow!("cannot read family member {}: {error:#}", reference.id)
         })?;
         if parent.is_none() {
@@ -63,7 +68,7 @@ pub fn migrate(
                 },
             ));
         }
-        let policy = crate::resume::prepare(&mut session, max_chars, prune)
+        let policy = crate::resume::prepare(&mut session, max_chars, resume_options)
             .map_err(|error| anyhow::anyhow!("family member {}: {error:#}", reference.id))?;
         let options = WriteOpts {
             cwd: opts.cwd.clone(),

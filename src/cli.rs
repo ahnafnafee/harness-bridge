@@ -78,6 +78,9 @@ enum Command {
         /// Shorten reasoning/tool outputs in resume context; preserve the archive.
         #[arg(long)]
         prune_resume_context: bool,
+        /// Rebuild unavailable context from readable checkpoint items or the transcript.
+        #[arg(long)]
+        rebuild_resume_context: bool,
     },
     /// Migrate one session from a source harness to a target harness.
     Migrate {
@@ -109,6 +112,9 @@ enum Command {
         /// Import saved child sessions recursively and remap their parent links.
         #[arg(long)]
         include_subagents: bool,
+        /// Rebuild unavailable context from readable checkpoint items or the transcript.
+        #[arg(long)]
+        rebuild_resume_context: bool,
     },
 }
 
@@ -230,6 +236,7 @@ pub fn run() -> anyhow::Result<()> {
             dry_run,
             resume_max_chars,
             prune_resume_context,
+            rebuild_resume_context,
         } => {
             let bundle = crate::portable::Bundle::load(&file)?;
             let destination = providers::provider_named(&to, &homes)?;
@@ -240,7 +247,10 @@ pub fn run() -> anyhow::Result<()> {
                 &ir::WriteOpts { cwd, name, dry_run },
                 true,
                 resume_max_chars,
-                prune_resume_context,
+                crate::resume::Options {
+                    prune: prune_resume_context,
+                    rebuild: rebuild_resume_context,
+                },
             )?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
             Ok(())
@@ -256,6 +266,7 @@ pub fn run() -> anyhow::Result<()> {
             resume_max_chars,
             prune_resume_context,
             include_subagents,
+            rebuild_resume_context,
         } => {
             if from == to && from != "dsh" {
                 anyhow::bail!("--from and --to must differ (dsh -> dsh is allowed with --preset)");
@@ -271,7 +282,7 @@ pub fn run() -> anyhow::Result<()> {
             let r = resolve(&refs, &query)?;
 
             if from == "dsh" && to == "dsh" {
-                anyhow::ensure!(!include_subagents && !prune_resume_context && resume_max_chars == crate::resume::DEFAULT_MAX_CHARS,
+                anyhow::ensure!(!include_subagents && !prune_resume_context && !rebuild_resume_context && resume_max_chars == crate::resume::DEFAULT_MAX_CHARS,
                     "DSH preset copies preserve the raw transcript; context-budget/pruning and --include-subagents apply to cross-harness migration, not --preset");
                 let dsh = src
                     .as_any()
@@ -298,7 +309,10 @@ pub fn run() -> anyhow::Result<()> {
                 &opts,
                 include_subagents,
                 resume_max_chars,
-                prune_resume_context,
+                crate::resume::Options {
+                    prune: prune_resume_context,
+                    rebuild: rebuild_resume_context,
+                },
             )?;
             println!("{}", serde_json::to_string_pretty(&outcome)?);
             Ok(())

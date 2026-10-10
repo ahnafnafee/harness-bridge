@@ -225,6 +225,7 @@ impl super::Provider for ZcodeProvider {
             updated_ms: updated,
             events: evs,
             resume_events,
+            resume_context_unavailable: None,
         })
     }
 

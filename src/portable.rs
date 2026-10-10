@@ -15,7 +15,7 @@ use std::{
 };
 
 const FORMAT: &str = "harness-bridge-session";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,7 +78,7 @@ impl Bundle {
                 }
             }
             let mut session = source
-                .read(&reference)
+                .read_for_export(&reference)
                 .with_context(|| format!("cannot export family member {}", reference.id))?;
             anyhow::ensure!(
                 session.id == reference.id,
@@ -99,9 +99,20 @@ impl Bundle {
     }
 
     fn new(payload: Payload) -> anyhow::Result<Self> {
+        // Old readers cannot enforce the unavailable-context guard. Keep normal
+        // files at v1; require v2 only when context reconstruction is necessary.
+        let version = if payload
+            .sessions
+            .iter()
+            .any(|s| s.resume_context_unavailable.is_some())
+        {
+            VERSION
+        } else {
+            1
+        };
         let bundle = Self {
             format: FORMAT.into(),
-            version: VERSION,
+            version,
             exported_at: crate::util::iso_ms(chrono::Utc::now().timestamp_millis()),
             sha256: checksum(&payload)?,
             payload,
@@ -120,8 +131,8 @@ impl Bundle {
             "not a harness-bridge portable session (expected format {FORMAT:?})"
         );
         anyhow::ensure!(
-            value["version"] == VERSION,
-            "unsupported portable session version {}; this build supports version {VERSION}",
+            matches!(value["version"].as_u64(), Some(1..=2)),
+            "unsupported portable session version {}; this build supports versions 1 through {VERSION}",
             value["version"]
         );
         anyhow::ensure!(
@@ -148,6 +159,16 @@ impl Bundle {
             .context("invalid export timestamp")?;
         let mut by_id = HashMap::new();
         for session in sessions {
+            if let Some(reason) = &session.resume_context_unavailable {
+                anyhow::ensure!(
+                    self.version >= 2,
+                    "unavailable resume context requires portable format version 2"
+                );
+                anyhow::ensure!(
+                    !reason.trim().is_empty(),
+                    "unavailable resume context has no reason"
+                );
+            }
             anyhow::ensure!(
                 matches!(
                     session.source.as_str(),
@@ -275,7 +296,8 @@ impl Bundle {
             json!({"format":self.format, "version":self.version, "location":path,
             "source_provider":self.payload.sessions[0].source, "root_session_id":self.payload.root_session_id,
             "sessions":self.payload.sessions.len(), "events":self.payload.sessions.iter().map(|s|s.events.len()).sum::<usize>(),
-            "bytes":bytes.len(), "sha256":self.sha256, "dry_run":dry_run}),
+            "bytes":bytes.len(), "sha256":self.sha256, "dry_run":dry_run,
+            "resume_context_unavailable":self.payload.sessions.iter().filter_map(|s| s.resume_context_unavailable.as_ref().map(|reason|json!({"session_id":s.id,"reason":reason}))).collect::<Vec<_>>()}),
         )
     }
 }

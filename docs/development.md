@@ -24,6 +24,7 @@
 | `src/providers/codex/tests.rs` | DSH-to-Codex conversion regression coverage. |
 | `src/providers/{claude,zcode,agy}.rs` | Other providers' native formats and registration. |
 | `scripts/verify_codex_resume.py` | Isolated end-to-end Codex resume probe. |
+| `scripts/verify_portable_transfer.py` | CLI export/move/import/read-back matrix for Codex, Claude Code, DSH and ZCode, with native Codex continuation probes. |
 
 ## Context and transcript fidelity
 
@@ -31,11 +32,11 @@
 
 DSH replacement bounds refer to positions in the current context surface. A newer summary can precede an older retained message, so sorting or deleting by numeric sequence range is incorrect. Replay the operations in log order, splice between the referenced positions, and restore tool calls for surviving results. Invalid or unsupported operations fail conversion rather than silently replaying superseded history.
 
-Claude's latest boundary retains its summary, declared preserved records, and later messages. Codex reads plaintext replacement histories; opaque checkpoints fail explicitly. ZCode respects persisted summaries and provider visibility. Codex exports retained events into a native `compacted.payload.replacement_history`, while the visible rollout still contains the full converted archive. Other writers use their native checkpoint/visibility mechanisms; agy uses retained text turns plus a separate normalized archive.
+Claude's latest boundary retains its summary, declared preserved records, and later messages. Codex reads plaintext replacement histories; opaque checkpoints require explicit recovery on import/migration but do not block readable archive export. ZCode respects persisted summaries and provider visibility. Codex writes retained events into a native `compacted.payload.replacement_history`, while the visible rollout still contains the full converted archive. Other writers use their native checkpoint/visibility mechanisms; agy uses retained text turns plus a separate normalized archive.
 
 The shared size policy checks serialized normalized event characters before writing. Pruning is opt-in, preserves protected text and tool arguments, and never changes the archive. It is not a token estimate. Family tests cover nested parent links, deterministic reimports, native Codex registration, both ZCode parent schemas, and preflight failures leaving the destination unwritten. Temporary Claude homes must never register sessions in the user's real desktop sidebar.
 
-Portable exports serialize that same model into the [version 1 format](portable-format.md), preserving archive/context separation without applying a destination budget. Loading validates the raw payload checksum before deserializing it, then validates the complete family. A read-only in-memory provider exposes those sessions to the existing family pipeline, so the receiving PC never opens source stores. Receiver-generated parent placement metadata takes precedence over historical migration metadata.
+Portable exports serialize that same model into the [portable format](portable-format.md), preserving archive/context separation without applying a destination budget. Files with unavailable context use version 2 and retain a reason plus any readable checkpoint items as a recovery seed. `--rebuild-resume-context` reconstructs from that seed or the readable archive, adds a notice, and preflights the entire family before writes. Unknown/malformed active items remain hard errors. Loading validates the raw payload checksum before deserializing it, then validates the complete family. A read-only in-memory provider exposes those sessions to the existing family pipeline, so the receiving PC never opens source stores. Receiver-generated parent placement metadata takes precedence over historical migration metadata.
 
 ## Local validation
 
@@ -64,6 +65,14 @@ python scripts/verify_codex_resume.py "C:\Temp\hb-test\sessions\YYYY\MM\DD\rollo
 The Python probe uses only the standard library. It copies the rollout into a separate temporary home, initializes the real app-server, resumes the thread, pages displayed turns, and starts a turn against a local Responses API stub. It checks the actual next request size and successful turn completion without credentials or remote model calls.
 
 `--max-input-chars` sets the stub's input limit; the default is 1,000,000 characters. `--timeout` bounds the probe, and `--codex` selects the executable. This is a replay and request-shape check, not a tokenizer estimate or a guarantee that every remote model configuration accepts the context.
+
+Exercise encrypted-checkpoint export, transfer to a separate receiving home, import and native read-back through all 16 pairs of Codex, Claude Code, DSH and ZCode:
+
+```powershell
+python scripts/verify_portable_transfer.py --bridge "target\debug\harness-bridge.exe" --codex "C:\path\to\codex.exe"
+```
+
+The script checks nested saved children, archive preservation, unavailable-context guards, context budgets, explicit recovery/pruning, dry runs and native Codex tool continuations. `--source-rollout <path>` additionally copies an actual encrypted Codex session read-only into an isolated source home, then exports, imports and probes that copy. No remote models are called, and agy is outside this end-to-end matrix.
 
 ## Provider changes
 

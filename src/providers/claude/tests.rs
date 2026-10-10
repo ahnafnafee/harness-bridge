@@ -456,7 +456,7 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             &WriteOpts::default(),
             true,
             max_chars,
-            false,
+            crate::resume::Options::default(),
         )
         .unwrap();
         let refs = target.discover().unwrap();
@@ -518,7 +518,7 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             &WriteOpts::default(),
             true,
             max_chars,
-            false,
+            crate::resume::Options::default(),
         )
         .unwrap();
         assert_eq!(second.native_id, outcome.native_id);
@@ -535,7 +535,7 @@ fn family_import_preserves_native_children_and_is_idempotent() {
             &WriteOpts::default(),
             true,
             max_chars,
-            false,
+            crate::resume::Options::default(),
         )
         .unwrap();
         assert_eq!(transferred.native_id, outcome.native_id);
@@ -573,7 +573,10 @@ fn family_preflight_failure_leaves_destination_unwritten() {
         &WriteOpts::default(),
         true,
         2000,
-        true
+        crate::resume::Options {
+            prune: true,
+            ..Default::default()
+        }
     )
     .is_err());
     assert!(!path.exists());

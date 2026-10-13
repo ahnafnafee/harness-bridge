@@ -59,7 +59,7 @@ def native_dsh_layout(home):
         path = directory / "session.v4.jsonl"
         if not path.exists():
             continue
-        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n") if line.strip()]
         records[0]["id"] = "session-" + directory.name
         if records[0].get("parentSession"):
             records[0]["parentSession"] = "session-" + records[0]["parentSession"]
@@ -107,7 +107,7 @@ def exercise(bridge, codex, source_rollout):
             initial.append(record(agent_mail("after-checkpoint plaintext report")))
             if index == 0:
                 initial.append(record(agent_mail("encrypted tail header", encrypted=True)))
-            initial.append(record(message("latest task request")))
+            initial.append(record(message("latest task request\u0085continued request")))
             rows(source / f"sessions/rollout-2026-10-09T00-00-00-{session_id}.jsonl", initial)
         source_before = snapshot(source)
 
@@ -180,6 +180,7 @@ def exercise(bridge, codex, source_rollout):
             assert all(not session.get("resume_context_unavailable") for session in reread)
             assert "superseded archive evidence" in roundtrip.read_text(encoding="utf-8")
             assert "archived plaintext report" in roundtrip.read_text(encoding="utf-8")
+            assert "\u0085continued request" in json.dumps(reread, ensure_ascii=False)
             active = json.dumps(reread[0]["resume_events"])
             assert "retained plaintext report" in active and "after-checkpoint plaintext report" in active
             assert "from /root/worker to /root" in active and "Encrypted agent-message payload unavailable" in active
@@ -205,6 +206,7 @@ def exercise(bridge, codex, source_rollout):
                 assert len(sessions) == 3
                 assert sessions[2]["parent_session"] == sessions[1]["id"]
                 assert "output evidence output evidence" in roundtrip.read_text(encoding="utf-8")
+                assert "\u0085continued request" in json.dumps(sessions, ensure_ascii=False)
                 if destination == "codex":
                     verify(str(codex), Path(result["location"]), 1_000_000, 45, expected_texts=("retained plaintext report", "after-checkpoint plaintext report"))
             print(f"PASS: {source_provider} export imports and reads back through all four destination harnesses")

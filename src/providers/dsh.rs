@@ -10,11 +10,14 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 mod context;
+#[cfg(test)]
+mod tests;
 
 use context::{decode_events, replay_surface};
 
 pub struct DshProvider {
     pub dsh_home: PathBuf,
+    child_index: std::sync::OnceLock<std::collections::HashMap<String, Vec<SessionRef>>>,
 }
 
 /// dsh source kinds that represent genuine user-channel input.
@@ -25,6 +28,26 @@ fn is_real_user(kind: Option<&str>) -> bool {
         None => true,
         Some(k) => REAL_USER_SOURCES.contains(&k),
     }
+}
+
+fn canonical_session_id(id: &str) -> &str {
+    id.strip_prefix("session-").unwrap_or(id)
+}
+
+fn read_session_header(path: &Path) -> anyhow::Result<Option<Value>> {
+    use std::io::{BufRead, BufReader};
+    let mut input = BufReader::new(std::fs::File::open(path)?);
+    let compressed = input.fill_buf()?.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+    let mut input: Box<dyn BufRead> = if compressed {
+        Box::new(BufReader::new(zstd::stream::read::Decoder::with_buffer(
+            input,
+        )?))
+    } else {
+        Box::new(input)
+    };
+    let mut header = String::new();
+    input.read_line(&mut header)?;
+    Ok(serde_json::from_str(&header).ok())
 }
 
 /// Best-effort reconstruction of dsh's project-dir slug (`--F-Miscellaneous-GitHub-mod-smali--`).
@@ -48,7 +71,10 @@ fn project_slug(cwd: &str) -> String {
 
 impl DshProvider {
     pub fn new(dsh_home: PathBuf) -> Self {
-        DshProvider { dsh_home }
+        DshProvider {
+            dsh_home,
+            child_index: std::sync::OnceLock::new(),
+        }
     }
 
     fn projcache_title(&self, dsh_id: &str) -> Option<String> {
@@ -311,7 +337,8 @@ impl super::Provider for DshProvider {
                 .collect();
             sessions.sort_by_key(|e| e.file_name());
             for s in sessions {
-                let dsh_id = s.file_name().to_string_lossy().to_string();
+                let folder_name = s.file_name().to_string_lossy().to_string();
+                let dsh_id = canonical_session_id(&folder_name).to_string();
                 if dsh_id.len() != 36 || dsh_id.chars().filter(|c| *c == '-').count() != 4 {
                     continue;
                 }
@@ -320,6 +347,7 @@ impl super::Provider for DshProvider {
                     "session.v4.jsonl",
                     "session.v3.jsonl.zstd",
                     "session.v3.jsonl",
+                    "session.jsonl.zstd",
                     "session.jsonl",
                 ]
                 .iter()
@@ -386,7 +414,7 @@ impl super::Provider for DshProvider {
             parent_session: header
                 .get("parentSession")
                 .and_then(|c| c.as_str())
-                .map(str::to_string),
+                .map(|id| canonical_session_id(id).to_string()),
             origin: header
                 .get("origin")
                 .and_then(|c| c.as_str())
@@ -400,20 +428,29 @@ impl super::Provider for DshProvider {
     }
 
     fn children(&self, parent: &SessionRef) -> anyhow::Result<Vec<SessionRef>> {
-        let mut children = Vec::new();
-        for r in self.discover()? {
-            let text = read_maybe_zstd(Path::new(&r.locator))?;
-            if let Some(header) = text
-                .lines()
-                .next()
-                .and_then(|ln| serde_json::from_str::<Value>(ln).ok())
-            {
-                if header.get("parentSession").and_then(Value::as_str) == Some(parent.id.as_str()) {
-                    children.push(r);
+        // Cache parent links for one CLI conversion instead of scanning every
+        // transcript again for each member of the saved family.
+        if self.child_index.get().is_none() {
+            let mut index: std::collections::HashMap<String, Vec<SessionRef>> =
+                std::collections::HashMap::new();
+            for reference in self.discover()? {
+                if let Some(header) = read_session_header(Path::new(&reference.locator))? {
+                    if let Some(parent_id) = header.get("parentSession").and_then(Value::as_str) {
+                        index
+                            .entry(canonical_session_id(parent_id).to_string())
+                            .or_default()
+                            .push(reference);
+                    }
                 }
             }
+            let _ = self.child_index.set(index);
         }
-        Ok(children)
+        Ok(self
+            .child_index
+            .get()
+            .and_then(|index| index.get(parent.id.as_str()))
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn write(&self, s: &Session, opts: &WriteOpts) -> anyhow::Result<WriteOutcome> {

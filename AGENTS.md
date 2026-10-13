@@ -76,6 +76,7 @@ The port is idempotent: same source + preset -> same new session id.
 - **Codex Desktop sidebar**: the desktop app's thread registry (`state_5.sqlite` `threads` table) is filled by a
   one-time backfill; files added later are invisible to the app. harness-bridge registers the thread automatically.
   The user may need to reopen/refresh the Codex window to see it.
+- **dsh discovery**: 0.3.3 accepts UUID and `session-UUID` folders, normalizes parent IDs across both forms, and reads compressed legacy `session.jsonl.zstd` transcripts. Saved family lookup reads native headers and caches parent links for the conversion.
 - **dsh writes** are plain JSONL in `~/.dsh/sessions/<project-slug>/<id>/session.v4.jsonl` (dsh also reads
   zstd-compressed files; both are accepted). Whether the dsh UI lists it may require dsh to rescan.
 - **Claude Code writes** drop harness-context messages (no developer channel): user prompts, assistant replies,

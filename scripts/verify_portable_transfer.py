@@ -53,6 +53,23 @@ def template(home):
     ])
 
 
+def native_dsh_layout(home):
+    resolved_home = home.resolve()
+    for directory in (home / "sessions").glob("*/*"):
+        path = directory / "session.v4.jsonl"
+        if not path.exists():
+            continue
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        records[0]["id"] = "session-" + directory.name
+        if records[0].get("parentSession"):
+            records[0]["parentSession"] = "session-" + records[0]["parentSession"]
+        rows(path, records)
+        target = directory.with_name("session-" + directory.name)
+        assert directory.resolve().is_relative_to(resolved_home)
+        assert target.resolve().is_relative_to(resolved_home)
+        directory.rename(target)
+
+
 def initialize_targets(receiver):
     template(receiver / "codex")
     database = receiver / "zcode.sqlite"
@@ -153,6 +170,8 @@ def exercise(bridge, codex, source_rollout):
             assert outcome["extra"]["resume_context_policy"]["reconstruction_source"] == "readable-checkpoint"
             assert len(outcome["extra"]["child_sessions"]) == 2
             assert outcome["extra"]["child_sessions"][1]["extra"]["resume_context_policy"]["reconstruction_source"] == "archive"
+            if target == "dsh":
+                native_dsh_layout(receiver / "dsh")
             roundtrip = receiver / f"{target}-roundtrip.hbridge.json"
             run(["export", outcome["native_id"], "--from", target, *flags, "--output", roundtrip, "--include-subagents"])
             reread = json.loads(roundtrip.read_text(encoding="utf-8"))["payload"]["sessions"]

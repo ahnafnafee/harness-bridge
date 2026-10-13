@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[command(
     name = "harness-bridge",
     version,
-    about = "Migrate coding-agent sessions between harnesses: dsh, Codex Desktop, Claude Code, ZCode, agy",
+    about = "Migrate coding-agent sessions between harnesses (dsh, Codex Desktop, Claude Code, ZCode, agy) and continue ChatGPT, claude.ai or Gemini chats from their data exports",
     long_about = None
 )]
 struct Cli {

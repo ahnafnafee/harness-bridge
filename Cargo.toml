@@ -1,8 +1,8 @@
 [package]
 name = "harness-bridge"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
-description = "Migrate coding-agent sessions between harnesses: DeepSeek Harness (dsh), Codex Desktop, Claude Code, ZCode, agy"
+description = "Migrate coding-agent sessions between harnesses (DeepSeek Harness (dsh), Codex Desktop, Claude Code, ZCode, agy) and continue ChatGPT, claude.ai and Gemini web chats locally"
 license = "MIT"
 repository = "https://github.com/ahnafnafee/harness-bridge"
 keywords = ["codex", "claude-code", "sessions", "migration", "agent"]

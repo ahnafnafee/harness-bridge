@@ -146,10 +146,16 @@ fn list_provider(name: &str, homes: &providers::Homes) -> anyhow::Result<()> {
     }
     println!("== {} ({} sessions) ==", p.name(), refs.len());
     for r in &refs {
+        let date = r
+            .updated_ms
+            .or(r.created_ms)
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map_or("-".to_string(), |d| d.format("%Y-%m-%d").to_string());
         println!(
-            "  {:38}  {:8}  {}  {}",
+            "  {:38}  {:8}  {:10}  {}  {}",
             r.id,
             if r.migrated { "migrated" } else { "-" },
+            date,
             r.title.as_deref().unwrap_or("(untitled)"),
             r.cwd.as_deref().unwrap_or("")
         );

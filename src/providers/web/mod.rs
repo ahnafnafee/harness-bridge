@@ -233,9 +233,15 @@ impl WebProvider {
         let plan = self.attachments(reference)?;
         let export = &self.loaded()?.export;
         let (mut copied, mut kept) = (0, 0);
+        // Targets use `/`; joining part by part keeps paths native on Windows.
+        let under = |relative: &str| {
+            relative
+                .split('/')
+                .fold(base.to_path_buf(), |p, part| p.join(part))
+        };
         if !dry_run {
             for attachment in &plan {
-                if export.copy_to(&attachment.entry, &base.join(&attachment.target))? {
+                if export.copy_to(&attachment.entry, &under(&attachment.target))? {
                     copied += 1;
                 } else {
                     kept += 1;
@@ -243,7 +249,7 @@ impl WebProvider {
             }
         }
         Ok(serde_json::json!({
-            "folder": base.join(Files::folder(self.format, &reference.id)),
+            "folder": under(&Files::folder(self.format, &reference.id)),
             "files": plan.len(), "copied": copied, "already_present": kept, "dry_run": dry_run,
         }))
     }

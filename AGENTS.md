@@ -8,13 +8,16 @@ Instructions for AI coding agents (Claude Code, Codex, ZCode, dsh subagents, …
 `harness-bridge` converts coding-agent session transcripts between harnesses:
 `dsh` (DeepSeek Harness) ↔ `codex` (Codex Desktop/CLI) ↔ `claude` (Claude Code) ↔ `zcode` ↔ `agy` (text-turn writes).
 It reads the source, converts through a normalized model, and writes a native session the target
-harness can list and resume. Nothing in the source is modified.
+harness can list and resume. Nothing in the source is modified. It also reads the data exports of
+ChatGPT, claude.ai and Gemini as read-only sources (`chatgpt`, `claude-web`, `gemini-web`).
 
 ## When to use it
 
 - The user asks to "move/copy/migrate a session to Codex/Claude/…", to "resume my old session in another tool",
   or to "import" a conversation from one assistant into another.
 - The user wants a session to appear in a harness it was not created in.
+- The user wants to continue a ChatGPT, claude.ai or Gemini web chat locally, or asks what to do with one
+  of those data exports. Web apps have no import: chats move out of them, never into them.
 
 Do NOT use it to: merge two sessions, edit conversation content, or export human-readable transcripts
 (it writes native harness stores and portable session data, not markdown).
@@ -29,6 +32,8 @@ harness-bridge migrate <query> --from dsh --to codex --cwd "F:\\target\\dir" --n
 harness-bridge migrate <query> --dry-run              # full conversion, nothing written
 harness-bridge export <query> --from claude --output session.hbridge.json --include-subagents
 harness-bridge import session.hbridge.json --to codex --cwd "D:\\project" --dry-run
+harness-bridge list --export chatgpt-export.zip       # web export; the app is detected
+harness-bridge migrate <query> --from chatgpt --to claude --export chatgpt-export.zip --cwd "D:\\chats\\topic"
 ```
 
 Conversion flags: `--cwd` (target base directory), `--name` (display title), `--dry-run`,
@@ -61,6 +66,9 @@ caveat as local migrations; preserve any later destination turns before repeatin
    preserve that destination copy before reimporting.
 5. **Report outcomes faithfully.** After a real write, tell the user: the target location, the native id, and
    any caveats below that apply.
+6. **Web sources need a folder.** `--cwd` is required for `chatgpt`, `claude-web` and `gemini-web`. Ask where the
+   chat should live, create that folder, and tell the user that attachments the export contains are copied into
+   `<provider>-attachments/<chat id>/` there. Report the `attachments` counts from the output.
 
 ## dsh -> dsh preset porting
 
@@ -97,6 +105,11 @@ The port is idempotent: same source + preset -> same new session id.
 - **Codex agent mail**: 0.3.2 reads native `agent_message` model-input records in archives, retained checkpoints and later turns. These become labeled user input preserving author, recipient and plaintext. Encrypted payloads are marked unavailable and require the same explicit recovery, even without compaction. Similar assistant UI notifications are not duplicated.
 - **Saved child links** use native destination fields where supported; agy uses the migration archive and ZCode
   uses a migration entry on schemas without `parent_id`. These imports do not start agents or translate tools.
+- **Web exports** are read-only sources passed with `--export` (the zip, its folder, or the conversations file).
+  Only the visible branch of a ChatGPT or claude.ai chat migrates; reasoning arrives as summaries. Gemini's Takeout
+  must be My Activity > Gemini Apps exported as JSON (the top-level "Gemini" item holds only Gems); its records are
+  grouped into chats by the chat link, or by 30-minute gaps without one. Files are copied only when the export
+  contains them, and portable files carry their references but not the files.
 - **Reasoning** is retained in the normalized archive. Active reasoning in Codex writes becomes labeled assistant
   text in a native resume checkpoint, including for uncompacted sources, because normalized text has no verifiable
   hidden state. Claude writes also use plain assistant text for active foreign reasoning. agy's native steps remain text-only.

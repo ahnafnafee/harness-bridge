@@ -8,7 +8,7 @@ harness-bridge import session.hbridge.json --to codex --cwd "/path/on/receiving/
 harness-bridge import session.hbridge.json --to codex --cwd "/path/on/receiving/machine"
 ```
 
-The source and destination can each be `dsh`, `codex`, `claude`, `zcode`, or `agy`, including the same harness on different machines. Both PCs need harness-bridge 0.3.0 or later. The exporting PC needs only its source store; the receiving PC needs only the chosen destination's initialized store and any required local template.
+The source and destination can each be `dsh`, `codex`, `claude`, `zcode`, or `agy`, including the same harness on different machines. Both PCs need harness-bridge 0.3.0 or later. The source can also be a web export read with `--export` (`chatgpt`, `claude-web` or `gemini-web`); those files keep attachment references but not the attached files, and the receiving PC needs 0.4.0 or later. The exporting PC needs only its source store; the receiving PC needs only the chosen destination's initialized store and any required local template.
 
 ## Envelope
 

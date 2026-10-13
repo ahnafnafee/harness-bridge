@@ -21,7 +21,7 @@
 
 ---
 
-`harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently.
+`harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently. It also reads the data exports of ChatGPT, claude.ai and Gemini, so a web chat can be [continued in Claude Code](#continue-a-web-chat) or another harness.
 
 The visible transcript and the context sent to the model are preserved separately. Supported source checkpoints keep superseded history out of the next request, and an import preflight checks retained context size before writing. Saved child sessions can be imported together with translated parent links.
 
@@ -31,6 +31,7 @@ The visible transcript and the context sent to the model are preserved separatel
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Move a session to another machine](#move-a-session-to-another-machine)
+- [Continue a web chat](#continue-a-web-chat)
 - [Compatibility](#compatibility)
 - [Options](#options)
 - [How conversion works](#how-conversion-works)
@@ -130,6 +131,45 @@ The file carries conversation data, including recorded paths and text, rather th
 
 See the [portable format specification](docs/portable-format.md) for version 1's layout and validation rules.
 
+## Continue a web chat
+
+ChatGPT, claude.ai and Gemini have no import, but each offers a data export. harness-bridge reads that export as a read-only source, so a web chat becomes a native session you can continue in Claude Code or another harness. Chats only move out of the web apps; claude.ai web and the mobile apps cannot receive them.
+
+| App | Request the export | Provider |
+| :-- | :-- | :-- |
+| ChatGPT | Settings > Data controls > Export data | `chatgpt` |
+| claude.ai | Settings > Privacy > Export data | `claude-web` |
+| Gemini | Google Takeout > My Activity > Gemini Apps, with Activity records set to JSON under Multiple formats | `gemini-web` |
+
+Each app emails a download link. harness-bridge reads the zip as it is, an extracted folder, or the conversations file; extract a `.tgz` first. For Gemini, the top-level "Gemini" Takeout item holds only Gems, and HTML activity cannot be read.
+
+List the chats in an export. The app is detected from its contents:
+
+```sh
+harness-bridge list --export chatgpt-export.zip
+```
+
+Preview, then write one chat. `--cwd` is required because web chats have no working directory, and the files a chat refers to are copied there:
+
+```powershell
+harness-bridge migrate "Fridge energy math" --from chatgpt --to claude --export chatgpt-export.zip --cwd "D:\chats\fridge" --dry-run
+harness-bridge migrate "Fridge energy math" --from chatgpt --to claude --export chatgpt-export.zip --cwd "D:\chats\fridge"
+```
+
+Resume it from that folder with `claude --resume <native id>`, or open it from the Claude Desktop Code tab, where the chat is registered.
+
+What carries over:
+
+- The visible branch of each chat. ChatGPT and claude.ai keep every edit and regeneration; the branch you last saw is the one migrated.
+- Code runs, web results, image generation and other tool use, as tool calls with their output. A call with no recorded output gets an explicit empty result, and output with no call stays as text.
+- Reasoning summaries, as reasoning. Hidden model state is not in the exports.
+- Text that claude.ai extracted from uploaded documents, inline in the prompt.
+- Uploaded files and generated images that the export contains, copied to `<cwd>/<provider>-attachments/<chat id>/` and referenced by that path so the destination can open them. Files the export left out are named as missing.
+
+Gemini's Takeout is an activity log of single prompts and answers. Records are grouped into chats by the chat id in their link, and records without one are grouped while less than 30 minutes apart.
+
+Web chats can also be written to a portable file and imported on another machine running 0.4.0 or later. The file keeps the attachment references but not the files.
+
 ## Compatibility
 
 | Provider | Read | Write | Native format and constraints |
@@ -139,15 +179,19 @@ See the [portable format specification](docs/portable-format.md) for version 1's
 | **Claude Code** | Yes | Yes | Project JSONL with compact boundaries, tool-use, and tool-result blocks. Active foreign reasoning becomes plain text; harness instructions are omitted because there is no developer channel. |
 | **ZCode** | Yes | Yes | SQLite session, message, and part tables. Writes use the destination database. |
 | **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; unsupported tool activity is retained in a separate migration archive. |
+| **ChatGPT** (`chatgpt`) | Yes | No | Data export `conversations.json`, with shards when present; the visible branch of each chat. |
+| **claude.ai** (`claude-web`) | Yes | No | Data export `conversations.json`; the visible branch of each chat, or list order in older flat exports. |
+| **Gemini** (`gemini-web`) | Yes | No | Takeout `My Activity/Gemini Apps/MyActivity.json` in JSON, grouped into chats. |
 
-Messages, reasoning, tool pairs, timestamps, and stored summaries pass through the shared session model where the target can represent them. Provider-specific telemetry and unsupported records are not guaranteed to survive a round trip. Attachment and media transfer is not implemented.
+Messages, reasoning, tool pairs, timestamps, and stored summaries pass through the shared session model where the target can represent them. Provider-specific telemetry and unsupported records are not guaranteed to survive a round trip. Attachment and media transfer between harnesses is not implemented; web exports copy their own files as described in [Continue a web chat](#continue-a-web-chat).
 
 ## Options
 
 | Option | Purpose |
 | :-- | :-- |
-| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, or `agy`. |
-| `--cwd` | Set the destination's base directory; defaults to the source directory. Paths inside messages are left as recorded. |
+| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, or `agy`; `chatgpt`, `claude-web` and `gemini-web` as sources only. |
+| `--export` | Web chat export for the web sources: the zip, its extracted folder, or the conversations file. `list --export` detects the app. |
+| `--cwd` | Set the destination's base directory; defaults to the source directory. Required for web sources, whose attachments are copied there. Paths inside messages are left as recorded. |
 | `--name` | Override the destination's display title. |
 | `--dry-run` | Read and convert without writing. Required target templates are still read. |
 | `--resume-max-chars` | Retained-context character budget; defaults to 750,000. This is a preflight limit, not a token count. |
@@ -268,7 +312,7 @@ cargo test --locked
 
 The [development guide](docs/development.md) covers module ownership, provider work, and the real Codex app-server resume probe. Contributor guidance for running migrations is in [AGENTS.md](AGENTS.md).
 
-Current gaps include agy tool steps, attachment transfer, broader platform validation, and a built-in `verify` command.
+Current gaps include agy tool steps, attachment transfer between harnesses, broader platform validation, and a built-in `verify` command.
 
 ## License
 

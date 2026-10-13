@@ -23,6 +23,10 @@
 | `src/providers/codex/registry.rs` | Desktop sidebar, SQLite thread registration, and ledger updates. |
 | `src/providers/codex/tests.rs` | DSH-to-Codex conversion regression coverage. |
 | `src/providers/{claude,zcode,agy}.rs` | Other providers' native formats and registration. |
+| `src/providers/web/mod.rs` | Web export detection, the read-only web provider, attachment references and copies, and the event builder that keeps tool calls and results paired. |
+| `src/providers/web/export.rs` | Zip, folder and single-file access to an export. |
+| `src/providers/web/{chatgpt,claude_web,gemini_web}.rs` | Each web app's export records and visible-branch conversion. |
+| `src/providers/web/tests/` | Fixture exports for all three apps, read as folders and as zips. |
 | `scripts/verify_codex_resume.py` | Isolated end-to-end Codex resume probe. |
 | `scripts/verify_portable_transfer.py` | CLI export/move/import/read-back matrix for Codex, Claude Code, DSH and ZCode, with native Codex continuation probes. |
 
@@ -79,5 +83,7 @@ The script checks nested saved children, archive preservation, unavailable-conte
 Implement `Provider::discover`, `read`, and `write`, then add construction in `provider_named`. Preserve native timestamps, message roles, and tool pair ids where supported. Document records the target cannot represent instead of claiming universal losslessness.
 
 Keep serialization and registration concerns local to each provider. Extract a helper when it removes duplicated format logic or makes an independently complex operation easier to inspect; avoid creating a new abstraction for every record type.
+
+Web exports are read-only sources; their formats live in `src/providers/web`. Exports change without notice, so when an app ships a new layout or record type, add a fixture for that shape to the format's test file before changing the parser. Every conversion must keep a tool result directly behind its call, because every writer rejects unpaired results.
 
 For agy's protobuf fallback reader, the [community format notes](https://gist.github.com/ArcticWinterSturm/718637afb3094814a94dc77261e0b5e0) describe the step map used by the implementation.

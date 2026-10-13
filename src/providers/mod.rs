@@ -2,6 +2,7 @@ pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod dsh;
+pub mod web;
 pub mod zcode;
 
 use crate::ir::{Session, SessionRef, WriteOpts, WriteOutcome};
@@ -81,6 +82,8 @@ pub struct Homes {
     pub claude: Option<std::path::PathBuf>,
     pub zcode_db: Option<std::path::PathBuf>,
     pub agy: Option<std::path::PathBuf>,
+    /// A web chat export (zip, folder or file) for the read-only web providers.
+    pub export: Option<std::path::PathBuf>,
 }
 
 pub fn provider_named(name: &str, homes: &Homes) -> anyhow::Result<Box<dyn Provider>> {
@@ -115,8 +118,11 @@ pub fn provider_named(name: &str, homes: &Homes) -> anyhow::Result<Box<dyn Provi
                 .clone()
                 .unwrap_or_else(crate::util::default_agy_dir),
         ))),
-        other => anyhow::bail!(
-            "unknown provider {other:?} (expected: dsh | codex | claude | zcode | agy)"
-        ),
+        other => match web::Format::from_name(other) {
+            Some(format) => Ok(Box::new(web::WebProvider::new(format, homes.export.clone()))),
+            None => anyhow::bail!(
+                "unknown provider {other:?} (expected: dsh | codex | claude | zcode | agy | chatgpt | claude-web | gemini-web)"
+            ),
+        },
     }
 }

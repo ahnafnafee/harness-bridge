@@ -172,7 +172,14 @@ impl Bundle {
             anyhow::ensure!(
                 matches!(
                     session.source.as_str(),
-                    "dsh" | "codex" | "claude" | "zcode" | "agy"
+                    "dsh"
+                        | "codex"
+                        | "claude"
+                        | "zcode"
+                        | "agy"
+                        | "chatgpt"
+                        | "claude-web"
+                        | "gemini-web"
                 ),
                 "unsupported source provider {:?}",
                 session.source

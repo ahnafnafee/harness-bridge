@@ -32,6 +32,10 @@ struct Cli {
     /// agy data dir (default ~/.gemini/antigravity-cli).
     #[arg(long, global = true)]
     agy_dir: Option<String>,
+    /// Web chat export for chatgpt, claude-web or gemini-web: the zip, its
+    /// extracted folder, or the conversations file.
+    #[arg(long, global = true)]
+    export: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -198,10 +202,15 @@ pub fn run() -> anyhow::Result<()> {
         claude: cli.claude_home.as_ref().map(PathBuf::from),
         zcode_db: cli.zcode_db.as_ref().map(PathBuf::from),
         agy: cli.agy_dir.as_ref().map(PathBuf::from),
+        export: cli.export.as_ref().map(PathBuf::from),
     };
     match cli.command {
         Command::List { provider } => match provider {
             Some(p) => list_provider(&p, &homes),
+            None if homes.export.is_some() => {
+                let export = providers::web::Export::open(homes.export.as_deref().unwrap())?;
+                list_provider(providers::web::Format::detect(&export)?.name(), &homes)
+            }
             None => {
                 for p in ["dsh", "codex", "claude", "zcode", "agy"] {
                     if let Err(e) = list_provider(p, &homes) {
@@ -299,13 +308,23 @@ pub fn run() -> anyhow::Result<()> {
                 return Ok(());
             }
 
+            // Web chats have no working directory, and their attachments are
+            // copied relative to the one the new session gets.
+            let web = src.as_any().downcast_ref::<providers::web::WebProvider>();
+            if let Some(web) = web {
+                anyhow::ensure!(
+                    cwd.is_some(),
+                    "{} chats have no working directory; pass --cwd <folder> for the new session (attachments are copied there)",
+                    web.format().name()
+                );
+            }
             let dst = providers::provider_named(&to, &homes)?;
             println!("reading {} session {} ...", r.provider, r.id);
             let opts = ir::WriteOpts { cwd, name, dry_run };
-            let outcome = crate::family::migrate(
+            let mut outcome = crate::family::migrate(
                 src.as_ref(),
                 dst.as_ref(),
-                r,
+                r.clone(),
                 &opts,
                 include_subagents,
                 resume_max_chars,
@@ -314,6 +333,10 @@ pub fn run() -> anyhow::Result<()> {
                     rebuild: rebuild_resume_context,
                 },
             )?;
+            if let (Some(web), Some(base)) = (web, opts.cwd.as_deref()) {
+                outcome.extra["attachments"] =
+                    web.copy_attachments(&r, std::path::Path::new(base), dry_run)?;
+            }
             println!("{}", serde_json::to_string_pretty(&outcome)?);
             Ok(())
         }

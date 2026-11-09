@@ -75,7 +75,7 @@ Paths are relative to the user's home directory.
 | dsh | `~/.dsh/sessions/<project>/<id>/session.v4.jsonl[.zstd]` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Claude Code | `~/.claude/projects/<project>/<id>.jsonl` |
-| ZCode | `~/.zcode/cli/db/db.sqlite` |
+| ZCode | `~/.zcode/cli/db/db.sqlite`; Desktop task registration in `~/.zcode/v2/tasks-index.sqlite` when present. |
 | agy | `~/.gemini/antigravity-cli` |
 | Qoder CLI | `QODER_CONFIG_DIR` or `~/.qoder/projects/<project>/<id>.jsonl` |
 | Qoder IDE | `~/.qoder/projects/<project>/transcript/<id>.jsonl`; desktop database override with `--qoder-ide-db`. |
@@ -95,6 +95,8 @@ flowchart LR
 Every provider implements discovery, reading, writing, and child discovery. The shared [session model](../src/ir.rs) carries the archive and, when available, a separate set of events representing the source's current model context. The destination writer translates those records into native messages and tool items, then performs any registration its app needs. Claude and DSH writes add native context checkpoints; ZCode keeps archival messages visible in the transcript but hidden from the provider. agy writes retained text turns and stores the normalized archive separately in `brain/<id>/migration-archive.json`.
 
 Codex writes also update `session_index.jsonl`, the `threads` table in `state_5.sqlite` when present, and `dsh-imports.json`. This lets the Desktop app find imported chats without relying on its initial rollout backfill.
+
+ZCode Desktop 3.17 keeps its sidebar in a separate task index. When that index exists next to the selected CLI store, the writer registers top-level imports under the directory's unique active project, or creates a project if none exists. Duplicate active projects with the same root require resolution in ZCode before importing. Refresh the ZCode window to reload its task list. An arbitrary `--zcode-db` copy does not use the real desktop index; to test desktop registration, copy both databases into the matching `cli/db/db.sqlite` and `v2/tasks-index.sqlite` layout under a temporary directory.
 
 ## Resuming in Codex
 

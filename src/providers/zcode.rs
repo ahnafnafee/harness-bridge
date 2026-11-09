@@ -9,6 +9,10 @@ use crate::util::{uuid7, zcode_project_id};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 mod context;
+mod desktop;
+
+#[cfg(test)]
+mod tests;
 
 pub struct ZcodeProvider {
     pub db_path: std::path::PathBuf,
@@ -261,12 +265,6 @@ impl super::Provider for ZcodeProvider {
                 }
             }
         }
-        if opts.dry_run {
-            let con = self.open_ro()?;
-            for table in ["session", "message", "part", "session_entry"] {
-                con.prepare(&format!("select * from {table} limit 0"))?;
-            }
-        }
         let cwd = opts
             .cwd
             .clone()
@@ -289,10 +287,32 @@ impl super::Provider for ZcodeProvider {
                     .unwrap_or_default()
             });
 
+        let index_path = desktop::index_path(&self.db_path);
+        let mut desktop_project = None;
+        if opts.dry_run {
+            let con = self.open_ro()?;
+            for table in ["session", "message", "part", "session_entry"] {
+                con.prepare(&format!("select * from {table} limit 0"))?;
+            }
+            if let Some(path) = index_path.as_ref().filter(|p| p.is_file()) {
+                desktop::attach(&con, path, true)?;
+                desktop_project = desktop::Registration::prepare(&con, s, &session_id, &cwd)?
+                    .map(|registration| registration.project_id);
+            }
+        }
         if !opts.dry_run {
             let mut database = Connection::open(&self.db_path)?;
             database.busy_timeout(std::time::Duration::from_secs(10))?;
+            let available_index = index_path.as_ref().filter(|p| p.is_file());
+            if let Some(path) = available_index {
+                desktop::attach(&database, path, false)?;
+            }
             let con = database.transaction()?;
+            let registration = if available_index.is_some() {
+                desktop::Registration::prepare(&con, s, &session_id, &cwd)?
+            } else {
+                None
+            };
             // clear any previous import of this session so re-runs never leave stale rows
             con.execute(
                 "delete from part where session_id = ?1",
@@ -505,6 +525,15 @@ impl super::Provider for ZcodeProvider {
                         }
                     }
                     EventKind::Compaction { id, text } => {
+                        // The source reader has already reconstructed retained
+                        // context. A bare foreign marker must not supersede our
+                        // native resume boundary; its original stays archival.
+                        if s.resume_events.is_some()
+                            && !archival
+                            && text.as_deref().is_none_or(|text| text.trim().is_empty())
+                        {
+                            continue;
+                        }
                         insert_message(
                             &con,
                             &mut msg_seq,
@@ -520,14 +549,25 @@ impl super::Provider for ZcodeProvider {
                     EventKind::TurnStart | EventKind::TurnEnd { .. } | EventKind::Meta { .. } => {}
                 }
             }
+            if let Some(registration) = registration {
+                registration.write(&con, s, &session_id, &cwd, &title)?;
+                desktop_project = Some(registration.project_id);
+            }
             con.commit()?;
         }
 
+        let mut extra = json!({"title": title, "cwd": cwd, "dry_run": opts.dry_run});
+        if let Some(path) = index_path {
+            extra["desktop_index"] = json!(path);
+        }
+        if let Some(project) = desktop_project {
+            extra["desktop_project_id"] = json!(project);
+        }
         Ok(WriteOutcome {
             provider: "zcode".into(),
             location: format!("{}#{}", self.db_path.display(), session_id),
             native_id: session_id,
-            extra: json!({"title": title, "cwd": cwd, "dry_run": opts.dry_run}),
+            extra,
         })
     }
 }

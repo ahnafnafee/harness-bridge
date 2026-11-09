@@ -94,7 +94,11 @@ The port is idempotent: same source + preset -> same new session id.
 - **Claude Code writes** drop harness-context messages (no developer channel): user prompts, assistant replies,
   reasoning, tool calls/results and compaction summaries are kept.
 - **ZCode writes** go into the live `db.sqlite` (WAL). For zero-risk operations, copy the db and pass
-  `--zcode-db` to the copy.
+  `--zcode-db` to the copy. Desktop 3.17 also requires a task entry with a project link in
+  `~/.zcode/v2/tasks-index.sqlite`; the writer registers top-level imports there when that index exists.
+  Reuse the unique active project for the destination directory, or create one if none exists. Refresh
+  the ZCode window after importing. The index path is derived only from the selected `cli/db/db.sqlite`,
+  so an isolated database copy never falls back to the real desktop index.
 - **agy writes are text-turn native**: harness-bridge rebuilds the conversation db (steps table, summaries index,
   brain transcripts) from a template conversation. Tool calls/results are not yet representable in agy's protobuf
   steps and are omitted. Content that trips Google's safety filters may still be blocked when agy generates responses.

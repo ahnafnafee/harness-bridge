@@ -432,6 +432,9 @@ fn destination_paths(outcome: &WriteOutcome) -> Vec<String> {
             .rsplit_once('#')
             .map_or(location.as_str(), |(path, _)| path);
         paths.extend([database.to_owned(), format!("{database}-wal")]);
+        if let Some(index) = outcome.extra["desktop_index"].as_str() {
+            paths.extend([index.to_owned(), format!("{index}-wal")]);
+        }
     } else {
         paths.push(location.clone());
     }

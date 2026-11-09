@@ -83,7 +83,7 @@ pub(super) fn load(entry: &str, text: String) -> anyhow::Result<Vec<Chat>> {
 }
 
 /// Messages from the root to the visible leaf.
-fn branch<'a>(c: &'a Conversation) -> anyhow::Result<Vec<&'a Message>> {
+fn branch(c: &Conversation) -> anyhow::Result<Vec<&Message>> {
     if c.chat_messages
         .iter()
         .all(|m| m.parent_message_uuid.is_none())

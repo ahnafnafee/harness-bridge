@@ -135,7 +135,7 @@ pub struct WriteOpts {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteOutcome {
     pub provider: String,
     /// Primary artifact path (or db key).

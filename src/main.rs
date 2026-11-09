@@ -1,13 +1,5 @@
-mod cli;
-mod family;
-mod ir;
-mod portable;
-mod providers;
-mod resume;
-mod util;
-
 fn main() {
-    if let Err(error) = cli::run() {
+    if let Err(error) = harness_bridge::cli::run() {
         eprintln!("error: {error:#}");
         std::process::exit(1);
     }

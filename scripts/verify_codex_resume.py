@@ -102,6 +102,18 @@ def verify(codex, rollout, max_input_chars, timeout, expected_texts=()):
         target = home / "sessions" / name
         target.parent.mkdir()
         shutil.copyfile(rollout, target)
+        # Recent app-server builds reject a provider change on resume. Retag
+        # only this disposable copy to the local stub, leaving source bytes and
+        # all transcript/context items unchanged.
+        copied = []
+        for line in target.read_text(encoding="utf-8").split("\n"):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("type") == "session_meta":
+                record["payload"]["model_provider"] = "resume_probe"
+            copied.append(json.dumps(record, ensure_ascii=False))
+        target.write_text("\n".join(copied) + "\n", encoding="utf-8")
         workspace = home / "workspace"
         workspace.mkdir()
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -128,6 +140,7 @@ plugins = false
                 env=dict(os.environ, CODEX_HOME=str(home)),
                 cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=stderr, text=True, encoding="utf-8",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
 
             def read_messages():

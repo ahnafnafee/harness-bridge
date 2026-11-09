@@ -1,0 +1,2 @@
+src/web/gpui/*.js text eol=lf
+src/web/gpui/*.gz -text

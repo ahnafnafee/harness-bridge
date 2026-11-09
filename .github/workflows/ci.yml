@@ -19,7 +19,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build (locked)
-        run: cargo build --locked --verbose
+        run: cargo build --locked --all-features --verbose
 
       - name: Test
-        run: cargo test --locked --verbose
+        run: cargo test --locked --all-features --verbose
+
+      - name: Test GPUI library model
+        run: cargo +stable test --locked --manifest-path ui/Cargo.toml

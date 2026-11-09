@@ -1,10 +1,12 @@
 <div align="center">
 
+<img src="assets/icon.png" width="80" height="80" alt="">
+
 <h1>harness-bridge</h1>
 
 <p>Convert coding sessions into another harness's native format, ready to continue.</p>
 
-<p><strong>DeepSeek Harness · Codex Desktop / CLI · Claude Code · ZCode · agy</strong></p>
+<p><strong>DeepSeek Harness · Codex · Claude Code · ZCode · agy · Qoder CLI</strong></p>
 
 [![Release][release-badge]][releases]
 [![License][license-badge]](LICENSE)
@@ -24,6 +26,8 @@
 `harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently. It also reads the data exports of ChatGPT, claude.ai and Gemini, so a web chat can be [continued in Claude Code](#continue-a-web-chat) or another harness.
 
 The visible transcript and the context sent to the model are preserved separately. Supported source checkpoints keep superseded history out of the next request, and an import preflight checks retained context size before writing. Saved child sessions can be imported together with translated parent links.
+
+Start with the [terminal workbench](docs/interfaces.md), use regular commands in scripts, or build the optional local browser interface, written in Rust with [GPUI Kit](https://gpui-kit.com/) and compiled to WebAssembly. Qoder IDE transcripts and desktop histories are also available as read-only sources.
 
 <details>
 <summary><kbd>Table of contents</kbd></summary>
@@ -56,6 +60,14 @@ cargo install --locked --path .
 Release archives target Windows x64, Linux x64, and macOS Apple Silicon. Local validation is Windows-first. The installed command does not require Python or Node; Python is used only by the optional development probe.
 
 ## Quick start
+
+Open the terminal workbench:
+
+```sh
+harness-bridge
+```
+
+Search for a conversation, press Enter to choose its destination, then review the preview. Press **w** on the review screen to write it. Without an interactive terminal, the bare command prints help instead. See the [interface guide](docs/interfaces.md) for keyboard controls, browser installation and source locations.
 
 List sessions, select an id prefix or title, and preview the conversion:
 
@@ -110,7 +122,7 @@ harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app"
 harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app"
 ```
 
-Both commands support all five harnesses. Import reads the transfer file without needing the source harness's home or database. Every included child is imported automatically, with destination ids and parent links recomputed on the receiving PC. The transcript, original timestamps, tool pairs, and retained resume context travel together. Context budgeting, opt-in pruning, and portable reasoning replay apply during import.
+Both commands support all six writable harnesses. Import reads the transfer file without needing the source harness's home or database. Every included child is imported automatically, with destination ids and parent links recomputed on the receiving PC. The transcript, original timestamps, tool pairs, and retained resume context travel together. Context budgeting, opt-in pruning, and portable reasoning replay apply during import.
 
 If import reports an oversized retained context, add `--prune-resume-context` to the preview/import commands to shorten reasoning and tool outputs while keeping the archive, or compact the source and export again.
 
@@ -178,6 +190,8 @@ Web chats can also be written to a portable file and imported on another machine
 | **Codex** | Yes | Yes | Rollout JSONL, desktop sidebar registration, and an import ledger. Writes require an existing top-level Desktop session as a template. |
 | **Claude Code** | Yes | Yes | Project JSONL with compact boundaries, tool-use, and tool-result blocks. Active foreign reasoning becomes plain text; harness instructions are omitted because there is no developer channel. |
 | **ZCode** | Yes | Yes | SQLite session, message, and part tables. Writes use the destination database. |
+| **Qoder CLI** (`qoder`) | Yes | Yes | Project JSONL with committed branch selection, resume checkpoints and a normalized archive sidecar. [Limits and native verification](docs/interfaces.md#qoder). |
+| **Qoder IDE** (`qoder-ide`) | Yes | No | Hook transcripts and read-only desktop history, using a matching CLI transcript for context when present. Visible history alone requires explicit recovery. |
 | **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; unsupported tool activity is retained in a separate migration archive. |
 | **ChatGPT** (`chatgpt`) | Yes | No | Data export `conversations.json`, with shards when present; the visible branch of each chat. |
 | **claude.ai** (`claude-web`) | Yes | No | Data export `conversations.json`; the visible branch of each chat, or list order in older flat exports. |
@@ -189,7 +203,9 @@ Messages, reasoning, tool pairs, timestamps, and stored summaries pass through t
 
 | Option | Purpose |
 | :-- | :-- |
-| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, or `agy`; `chatgpt`, `claude-web` and `gemini-web` as sources only. |
+| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, `agy`, or `qoder`; `qoder-ide`, `chatgpt`, `claude-web` and `gemini-web` as sources only. |
+| `--json` | Structured output for commands, including listings and provider diagnostics. |
+| `list --query`, `--limit` | Filter title, id, provider or folder and limit the newest-first results. |
 | `--export` | Web chat export for the web sources: the zip, its extracted folder, or the conversations file. `list --export` detects the app. |
 | `--cwd` | Set the destination's base directory; defaults to the source directory. Required for web sources, whose attachments are copied there. Paths inside messages are left as recorded. |
 | `--name` | Override the destination's display title. |
@@ -201,6 +217,7 @@ Messages, reasoning, tool pairs, timestamps, and stored summaries pass through t
 | `--preset` | Copy a DSH session to an installed directory preset; valid only with `--from dsh --to dsh`. |
 | `--dsh-home`, `--codex-home`, `--claude-home` | Override a provider's home directory, including for isolated validation. |
 | `--zcode-db`, `--agy-dir` | Override ZCode's database or agy's data directory. |
+| `--qoder-home`, `--qoder-ide-db` | Override Qoder's home and read-only IDE/desktop database. |
 
 Run `harness-bridge --help` or `harness-bridge migrate --help` for the full command reference.
 
@@ -216,6 +233,8 @@ Paths are relative to the user's home directory.
 | Claude Code | `~/.claude/projects/<project>/<id>.jsonl` |
 | ZCode | `~/.zcode/cli/db/db.sqlite` |
 | agy | `~/.gemini/antigravity-cli` |
+| Qoder CLI | `QODER_CONFIG_DIR` or `~/.qoder/projects/<project>/<id>.jsonl` |
+| Qoder IDE | `~/.qoder/projects/<project>/transcript/<id>.jsonl`; desktop database override with `--qoder-ide-db`. |
 
 </details>
 

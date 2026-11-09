@@ -1,0 +1,25 @@
+{
+  "gpui_kit": "0.9.0",
+  "toolchain": "nightly-2026-10-15",
+  "wasm_bindgen": "0.2.127",
+  "wasm_bytes": 27925439,
+  "sources": {
+    "ui/Cargo.toml": "9325fec1e45d5a7f09e5681ca84f3869b48424baa499eed9d89d2da85090d859",
+    "ui/Cargo.lock": "ccb298c71b179ebded615ebed1ba3711118dfab79de80e4e99d74989e3fcc272",
+    "ui/rust-toolchain.toml": "856e9cba7684df681ba343112280fc0d9bd4beb4c295cdc5e9785318bc09fe79",
+    "ui/.cargo/config.toml": "1c247d763cc04decb8531d6eb6d8724fd143a4468a36354e09acdef6048b089c",
+    "ui/src/client.rs": "1823bee83ff8fa7f4586664da43908f2457cb9aa341b9c7cba3ae5db9e14c4a6",
+    "ui/src/lib.rs": "b933934fd029ada77ff102ca31dd1cad132a687454972fc8134e52b21a83a00c",
+    "ui/src/model.rs": "873b799773344e1bfc6701d2b6d9cdd188860d6b068176200220742befd7dc72",
+    "ui/src/views.rs": "febc214a3b8ec4f4c928855a1cb407c8c079ab7f92bd0ac7eec8446908b74578",
+    "ui/src/workbench.rs": "fb6f72518d993af52a93f8f91fbc66cdc3787b52507d741902f8272717da6063",
+    "assets/fonts/IBMPlexSans-Regular.ttf": "975dcda37d80f038dcd143c22e33ca2d97a0cc5a929aace1c749153b0fe1afa5",
+    "assets/fonts/IBMPlexSans-Medium.ttf": "331c8639d7598b2cde62a911a71db195e30cb655cd6bdf2e324a7e984955f907",
+    "assets/fonts/IBMPlexSans-SemiBold.ttf": "a20caf8286023a6a7a85e40b1d2a4ae9fc3e3b1f9eda8f4c542dd4986af67bb1",
+    "assets/fonts/IBMPlexMono.ttf": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+  },
+  "assets": {
+    "harness_bridge_ui.js": "abbb0a33bd506669296c1fe995ae1962bf0cae9fceb70b557c534aa385c55af3",
+    "harness_bridge_ui_bg.wasm.gz": "fb62571acd44d01ecdd43e41d4cb96a7c7a3421ff7262e33afb013f53b3a8e9d"
+  }
+}

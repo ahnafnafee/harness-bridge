@@ -36,7 +36,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --features web-ui --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -53,6 +53,7 @@ jobs:
           cp "$bin" "$dir/"
           cp README.md LICENSE AGENTS.md "$dir/"
           cp -R docs "$dir/"
+          cp -R assets "$dir/"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             powershell.exe -NoProfile -Command "Compress-Archive -Path '$dir' -DestinationPath '$name.zip' -Force"
             asset="$name.zip"

@@ -177,6 +177,8 @@ impl Bundle {
                         | "claude"
                         | "zcode"
                         | "agy"
+                        | "qoder"
+                        | "qoder-ide"
                         | "chatgpt"
                         | "claude-web"
                         | "gemini-web"

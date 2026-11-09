@@ -69,14 +69,15 @@ impl super::Provider for ClaudeProvider {
                         .unwrap_or_default()
                         .to_string();
                     let slug_name = slug_dir.file_name().to_string_lossy().to_string();
-                    let title = self.custom_title(&slug_name, &id);
+                    let (cwd, first_prompt, created_ms) = discovery_metadata(&p);
+                    let title = self.custom_title(&slug_name, &id).or(first_prompt);
                     let md = f.metadata().ok();
                     refs.push(SessionRef {
                         provider: "claude".into(),
                         id: id.clone(),
                         title,
-                        cwd: None,
-                        created_ms: None,
+                        cwd,
+                        created_ms,
                         updated_ms: md.as_ref().and_then(|m| m.modified().ok()).map(|t| {
                             t.duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis() as i64)
@@ -569,6 +570,57 @@ impl super::Provider for ClaudeProvider {
                           "registered_in_desktop": registered_desktop}),
         })
     }
+}
+
+/// Read a bounded transcript head for the library; full validation belongs to read.
+fn discovery_metadata(path: &Path) -> (Option<String>, Option<String>, Option<i64>) {
+    use std::io::{BufRead, Read};
+    let Ok(file) = std::fs::File::open(path) else {
+        return (None, None, None);
+    };
+    let mut cwd = None;
+    let mut title = None;
+    let mut created = None;
+    for line in std::io::BufReader::new(file.take(262_144))
+        .lines()
+        .map_while(Result::ok)
+    {
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if cwd.is_none() {
+            cwd = record["cwd"].as_str().map(str::to_owned);
+        }
+        if created.is_none() {
+            created = record["timestamp"]
+                .as_str()
+                .and_then(ClaudeProvider::parse_ts);
+        }
+        if title.is_none()
+            && record["type"] == "user"
+            && record["isMeta"] != true
+            && record["isCompactSummary"] != true
+        {
+            let content = &record["message"]["content"];
+            let text = content.as_str().or_else(|| {
+                content
+                    .as_array()
+                    .and_then(|blocks| blocks.iter().find_map(|block| block["text"].as_str()))
+            });
+            title = text.filter(|text| !text.trim().is_empty()).map(|text| {
+                text.lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(100)
+                    .collect()
+            });
+        }
+        if cwd.is_some() && title.is_some() && created.is_some() {
+            break;
+        }
+    }
+    (cwd, title, created)
 }
 
 fn turns_count(s: &Session) -> i64 {

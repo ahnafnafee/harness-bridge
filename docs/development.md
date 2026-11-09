@@ -7,6 +7,10 @@
 | Module | Responsibility |
 | :-- | :-- |
 | `src/main.rs` | Entry point and error reporting. |
+| `src/lib.rs`, `src/app.rs` | Shared application operations, provider catalog, session inspection and immutable preview/confirmation plans. |
+| `src/tui.rs` | Optional terminal workbench, Unicode text entry, background operations and terminal restoration. |
+| `src/web_ui.rs`, `src/web/` | Optional loopback browser server and embedded interface. |
+| `ui/` | GPUI Kit Rust frontend, compiled separately to WebAssembly. |
 | `src/cli.rs` | Command parsing, query resolution, and migration orchestration. |
 | `src/family.rs` | Family discovery, translated parent ids, whole-family conversion preflight and writes. |
 | `src/portable.rs` | Versioned portable JSON, checksums, family validation, and a file-backed import source. |
@@ -23,6 +27,7 @@
 | `src/providers/codex/registry.rs` | Desktop sidebar, SQLite thread registration, and ledger updates. |
 | `src/providers/codex/tests.rs` | DSH-to-Codex conversion regression coverage. |
 | `src/providers/{claude,zcode,agy}.rs` | Other providers' native formats and registration. |
+| `src/providers/qoder.rs`, `src/providers/qoder/` | Qoder CLI branch/context handling, native writer, IDE transcript reader and read-only desktop history. |
 | `src/providers/web/mod.rs` | Web export detection, the read-only web provider, attachment references and copies, and the event builder that keeps tool calls and results paired. |
 | `src/providers/web/export.rs` | Zip, folder and single-file access to an export. |
 | `src/providers/web/{chatgpt,claude_web,gemini_web}.rs` | Each web app's export records and visible-branch conversion. |
@@ -50,6 +55,41 @@ cargo test --locked
 cargo build --locked
 ```
 
+Check the optional interfaces and the command-only configuration too:
+
+```sh
+cargo test --locked --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo check --locked --no-default-features
+cargo check --locked --no-default-features --features web-ui
+node --check src/web/boot.js
+cargo +stable test --locked --manifest-path ui/Cargo.toml
+python scripts/build_ui.py --check
+```
+
+`tui` is enabled by default; `web-ui` embeds the GPUI Kit browser bundle and adds a small local HTTP server. The graphical interface is Rust code under `ui/src`, with only startup and failure handling in JavaScript. Its model tests cover source/project filtering, Unicode search, deterministic sorting and session identity. IBM Plex fonts and selected GPUI component icons are embedded, so the application makes no external asset requests. Licenses are preserved under `assets/`. Inspection responses include structured role/text excerpts alongside the plain excerpt used by the terminal. The conversion library requires neither interface.
+
+The checked-in JavaScript bindings and compressed WebAssembly module allow a stable Rust installation to build the browser feature. `build.json` records source and artifact checksums; the browser-feature Rust tests reject stale bundles. To rebuild after changing frontend Rust code, install the pinned toolchain and matching binding generator, then run:
+
+```sh
+rustup toolchain install nightly-2026-10-15 --profile minimal --target wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.127 --locked
+python scripts/build_ui.py
+```
+
+The script also accepts `--wasm-bindgen <executable>`. GPUI Kit is pinned at 0.9.0 in a separate Cargo project, keeping its rendering dependencies and nightly requirement outside the conversion engine. The 8 MiB WebAssembly stack is configured in `ui/.cargo/config.toml`. The server sends the module with `application/wasm` and gzip encoding, and permits WebAssembly compilation in its content policy while retaining same-origin scripts and connections. GPUI's platform uses inline styles for its canvas and input mirror. Browser screen-reader integration and real phone IME behavior remain unverified; see [interfaces](interfaces.md).
+
+`app::TransferPlan` captures a portable source snapshot, preflights the whole family, records destination artifact stamps, and writes that snapshot only after confirmation. Browser plans are single-use and expire; source-location changes invalidate them. The server enforces loopback Host/Origin checks, per-run access keys on reads and writes, bounded JSON bodies, and restrictive asset policies. It does not expose a general file server.
+
+Exercise real CLI/UI operations against temporary stores, including access checks, preview immutability, single-use confirmation, portable export/import and settings invalidation:
+
+```sh
+cargo build --locked --all-features
+python scripts/verify_workbench.py --bridge target/debug/harness-bridge
+```
+
+Use `target/debug/harness-bridge.exe` on Windows. Optionally pass `--qoder <executable-or-qodercli.js>` to check that Qoder's own `--list-sessions` recognizes the generated transcript. The verified official npm Qoder CLI 1.1.85 listed it successfully; an unauthenticated resume probe stopped at Qoder's sign-in requirement. This is a native discovery check, not authenticated continuation or model generation. No source credentials are copied and no model requests are made. IDE hook-transcript fixtures follow the [documented format](https://docs.qoder.com/extensions/hooks#transcript-file-format); desktop database tests use an isolated schema fixture. Windows desktop data was also inspected read-only. Other platforms' desktop layouts and versions need explicit fixtures before widening compatibility claims.
+
 Use throwaway destination stores while investigating malformed conversions. Source stores must remain untouched. A dry run performs conversion but cannot verify whether the target app will load or resume the result.
 
 For a real isolated Codex write:
@@ -67,6 +107,8 @@ python scripts/verify_codex_resume.py "C:\Temp\hb-test\sessions\YYYY\MM\DD\rollo
 ```
 
 The Python probe uses only the standard library. It copies the rollout into a separate temporary home, initializes the real app-server, resumes the thread, pages displayed turns, and starts a turn against a local Responses API stub. It checks the actual next request size and successful turn completion without credentials or remote model calls.
+
+Current app-server builds enforce a saved chat's provider identity. The probe retags only the disposable copy's session metadata to its loopback provider; transcript and retained-context items, and the original rollout, remain unchanged. This tests replay and continuation through a local stub rather than switching a live chat between remote providers.
 
 `--max-input-chars` sets the stub's input limit; the default is 1,000,000 characters. `--timeout` bounds the probe, and `--codex` selects the executable. This is a replay and request-shape check, not a tokenizer estimate or a guarantee that every remote model configuration accepts the context.
 

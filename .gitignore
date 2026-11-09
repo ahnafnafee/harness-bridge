@@ -1,2 +1,4 @@
 /target
+/ui/target
+/src/web/gpui/*.wasm
 __pycache__/

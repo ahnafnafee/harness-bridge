@@ -2,6 +2,7 @@ pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod dsh;
+pub mod qoder;
 pub mod web;
 pub mod zcode;
 
@@ -75,13 +76,16 @@ pub fn git_info(cwd: &str) -> serde_json::Value {
     serde_json::Value::Object(info)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Homes {
     pub dsh: Option<std::path::PathBuf>,
     pub codex: Option<std::path::PathBuf>,
     pub claude: Option<std::path::PathBuf>,
     pub zcode_db: Option<std::path::PathBuf>,
     pub agy: Option<std::path::PathBuf>,
+    pub qoder: Option<std::path::PathBuf>,
+    pub qoder_ide_db: Option<std::path::PathBuf>,
     /// A web chat export (zip, folder or file) for the read-only web providers.
     pub export: Option<std::path::PathBuf>,
 }
@@ -118,11 +122,48 @@ pub fn provider_named(name: &str, homes: &Homes) -> anyhow::Result<Box<dyn Provi
                 .clone()
                 .unwrap_or_else(crate::util::default_agy_dir),
         ))),
+        "qoder" | "qoder-cli" => Ok(Box::new(qoder::QoderProvider::cli(
+            homes.qoder.clone().unwrap_or_else(crate::util::default_qoder_home),
+        ))),
+        "qoder-ide" => Ok(Box::new(qoder::QoderProvider::ide(
+            homes.qoder.clone().unwrap_or_else(crate::util::default_qoder_home),
+            homes.qoder_ide_db.clone().or_else(|| homes.qoder.is_none().then(crate::util::default_qoder_ide_db).flatten()),
+        ))),
         other => match web::Format::from_name(other) {
             Some(format) => Ok(Box::new(web::WebProvider::new(format, homes.export.clone()))),
             None => anyhow::bail!(
-                "unknown provider {other:?} (expected: dsh | codex | claude | zcode | agy | chatgpt | claude-web | gemini-web)"
+                "unknown provider {other:?} (expected: dsh | codex | claude | zcode | agy | qoder | qoder-ide | chatgpt | claude-web | gemini-web)"
             ),
         },
     }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct ProviderInfo {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub writable: bool,
+    pub export_required: bool,
+    pub note: &'static str,
+}
+
+pub const CATALOG: &[ProviderInfo] = &[
+    ProviderInfo { name: "dsh", label: "DeepSeek Harness", writable: true, export_required: false, note: "Native sessions and saved children; the app may need to rescan." },
+    ProviderInfo { name: "codex", label: "Codex", writable: true, export_required: false, note: "Native sessions with Desktop registration. Initialize a Desktop session first; refresh the window after import." },
+    ProviderInfo { name: "claude", label: "Claude Code", writable: true, export_required: false, note: "Native sessions. Developer-channel context cannot be represented." },
+    ProviderInfo { name: "zcode", label: "ZCode", writable: true, export_required: false, note: "Writes to the selected SQLite database; initialize ZCode first." },
+    ProviderInfo { name: "agy", label: "Antigravity", writable: true, export_required: false, note: "Text turns only; tool steps remain in the migration archive. Requires a local template conversation." },
+    ProviderInfo { name: "qoder", label: "Qoder CLI", writable: true, export_required: false, note: "Project transcripts; resume with qoder --resume <id> from the destination folder." },
+    ProviderInfo { name: "qoder-ide", label: "Qoder IDE", writable: false, export_required: false, note: "Read-only IDE transcripts and local desktop history. Import into Qoder CLI or another harness." },
+    ProviderInfo { name: "chatgpt", label: "ChatGPT export", writable: false, export_required: true, note: "Select a data export with --export; a destination folder is required." },
+    ProviderInfo { name: "claude-web", label: "claude.ai export", writable: false, export_required: true, note: "Select a data export with --export; a destination folder is required." },
+    ProviderInfo { name: "gemini-web", label: "Gemini export", writable: false, export_required: true, note: "Select a Takeout JSON export with --export; a destination folder is required." },
+];
+
+pub fn info(name: &str) -> anyhow::Result<&'static ProviderInfo> {
+    let name = if name == "qoder-cli" { "qoder" } else { name };
+    CATALOG
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| anyhow::anyhow!("unknown provider {name:?}; run harness-bridge providers"))
 }

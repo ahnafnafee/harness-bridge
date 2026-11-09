@@ -120,6 +120,27 @@ pub fn default_agy_dir() -> std::path::PathBuf {
     home().join(".gemini").join("antigravity-cli")
 }
 
+pub fn default_qoder_home() -> std::path::PathBuf {
+    std::env::var_os("QODER_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home().join(".qoder"))
+}
+
+pub fn default_qoder_ide_db() -> Option<std::path::PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        Some(home().join("Library/Application Support"))
+    } else {
+        Some(
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home().join(".config")),
+        )
+    };
+    base.map(|base| base.join("com.qoder.app.stable/main.sqlite"))
+}
+
 /// Claude Code project-slug: every char outside [A-Za-z0-9] becomes '-'.
 pub fn claude_slug(cwd: &str) -> String {
     cwd.chars()

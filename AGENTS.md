@@ -6,7 +6,7 @@ Instructions for AI coding agents (Claude Code, Codex, ZCode, dsh subagents, …
 ## What this tool is
 
 `harness-bridge` converts coding-agent session transcripts between harnesses:
-`dsh` (DeepSeek Harness) ↔ `codex` (Codex Desktop/CLI) ↔ `claude` (Claude Code) ↔ `zcode` ↔ `agy` (text-turn writes).
+`dsh` (DeepSeek Harness) ↔ `codex` (Codex Desktop/CLI) ↔ `claude` (Claude Code) ↔ `zcode` ↔ `agy` (text-turn writes) ↔ `qoder` (Qoder CLI). Qoder IDE (`qoder-ide`) is a read-only source.
 It reads the source, converts through a normalized model, and writes a native session the target
 harness can list and resume. Nothing in the source is modified. It also reads the data exports of
 ChatGPT, claude.ai and Gemini as read-only sources (`chatgpt`, `claude-web`, `gemini-web`).
@@ -23,6 +23,8 @@ Do NOT use it to: merge two sessions, edit conversation content, or export human
 (it writes native harness stores and portable session data, not markdown).
 
 ## Commands
+
+The bare command opens the terminal workbench when attached to a terminal. `tui` opens it explicitly; an optional `web-ui` build supplies `ui --open`. Both interfaces preview before writing. Use regular subcommands and `--json` for automation. `providers` lists capabilities and `doctor` reports source discovery without making model requests.
 
 ```bash
 harness-bridge list                                   # all providers, with ids, titles, migrated flags
@@ -41,7 +43,7 @@ Conversion flags: `--cwd` (target base directory), `--name` (display title), `--
 `--prune-resume-context` (explicit output shortening with the archive preserved),
 `--rebuild-resume-context` (import/migrate: explicit recovery of unavailable context),
 `--include-subagents` (saved children with translated parent links), plus home overrides
-`--dsh-home`, `--codex-home`, `--claude-home`, `--zcode-db`, `--agy-dir` (use these for testing against
+`--dsh-home`, `--codex-home`, `--claude-home`, `--zcode-db`, `--agy-dir`, `--qoder-home`, `--qoder-ide-db` (use these for testing against
 throwaway homes; see Testing below).
 
 Portable exports preserve the normalized archive and retained context in a versioned JSON file. Export reads
@@ -80,6 +82,8 @@ preset's `sync.mjs` for desktop visibility) rather than picking a different pres
 The port is idempotent: same source + preset -> same new session id.
 
 ## Provider caveats (tell the user when relevant)
+
+- **Qoder**: `qoder` / `qoder-cli` reads and writes native CLI project transcripts under `QODER_CONFIG_DIR` or `~/.qoder`; `qoder-ide` reads IDE hook transcripts and desktop history without writing the IDE database. A matching native transcript supplies desktop resume context when present. Otherwise explicit recovery is required. Unsupported replacement/compression state also requires recovery; malformed content and incomplete checkpoints fail. CLI writes preserve a normalized archive sidecar and do not register in the IDE. Qoder 1.1.85 discovery was verified; authenticated continuation was not. Use `--qoder-home` and `--qoder-ide-db` for isolated tests.
 
 - **Codex Desktop sidebar**: the desktop app's thread registry (`state_5.sqlite` `threads` table) is filled by a
   one-time backfill; files added later are invisible to the app. harness-bridge registers the thread automatically.

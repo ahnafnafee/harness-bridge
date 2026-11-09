@@ -4,19 +4,23 @@ use crate::{
     ir::{self, SessionRef},
     providers,
 };
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "harness-bridge",
     version,
-    about = "Migrate coding-agent sessions between harnesses (dsh, Codex Desktop, Claude Code, ZCode, agy) and continue ChatGPT, claude.ai or Gemini chats from their data exports",
+    about = "Browse, preview and migrate coding sessions between harnesses, including Qoder, or continue web chats from their data exports",
     long_about = None
 )]
 struct Cli {
+    /// Print structured output for scripts.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
     /// Codex home (default ~/.codex).
     #[arg(long, global = true)]
     codex_home: Option<String>,
@@ -32,6 +36,12 @@ struct Cli {
     /// agy data dir (default ~/.gemini/antigravity-cli).
     #[arg(long, global = true)]
     agy_dir: Option<String>,
+    /// Qoder home (default QODER_CONFIG_DIR or ~/.qoder).
+    #[arg(long, global = true)]
+    qoder_home: Option<String>,
+    /// Qoder IDE/desktop main.sqlite (read-only).
+    #[arg(long, global = true)]
+    qoder_ide_db: Option<String>,
     /// Web chat export for chatgpt, claude-web or gemini-web: the zip, its
     /// extracted folder, or the conversations file.
     #[arg(long, global = true)]
@@ -40,10 +50,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the interactive terminal workbench.
+    Tui {
+        /// Start with one source provider selected.
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Serve the optional browser interface on this computer.
+    Ui {
+        /// Loopback port; 0 chooses an available port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Open the interface in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Check local source discovery and explain provider requirements.
+    Doctor,
+    /// Show supported providers and their read/write capabilities.
+    Providers,
     /// List migratable sessions (all providers, or one).
     List {
         #[arg(long)]
         provider: Option<String>,
+        /// Search title, id, provider and working directory.
+        #[arg(long, short)]
+        query: Option<String>,
+        /// Show at most this many sessions (newest first).
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Export a portable session file for import on another machine.
     Export {
@@ -122,81 +157,40 @@ enum Command {
     },
 }
 
-fn list_provider(name: &str, homes: &providers::Homes) -> anyhow::Result<()> {
-    let p = providers::provider_named(name, homes)?;
-    let mut refs = p.discover()?;
-    let ledger_home = homes
-        .codex
-        .clone()
-        .unwrap_or_else(crate::util::default_codex_home);
-    let ledger = providers::load_codex_import_ledger(&ledger_home);
-    let ledger_keys: Vec<String> = ledger
-        .as_object()
-        .map(|o| o.keys().cloned().collect())
-        .unwrap_or_default();
-    for r in refs.iter_mut() {
-        let key = if r.provider == "dsh" {
-            r.id.clone()
-        } else {
-            format!("{}:{}", r.provider, r.id)
-        };
-        r.migrated = ledger_keys
-            .iter()
-            .any(|k| *k == key || k.ends_with(&format!(":{key}")));
-    }
-    println!("== {} ({} sessions) ==", p.name(), refs.len());
-    for r in &refs {
-        let date = r
+fn print_sessions(references: &[SessionRef]) {
+    for reference in references {
+        let date = reference
             .updated_ms
-            .or(r.created_ms)
+            .or(reference.created_ms)
             .and_then(chrono::DateTime::from_timestamp_millis)
-            .map_or("-".to_string(), |d| d.format("%Y-%m-%d").to_string());
+            .map_or("-".to_string(), |date| date.format("%Y-%m-%d").to_string());
         println!(
-            "  {:38}  {:8}  {:10}  {}  {}",
-            r.id,
-            if r.migrated { "migrated" } else { "-" },
+            "{:<11}  {:38}  {}  {}\n  {}{}",
+            reference.provider,
+            reference.id,
             date,
-            r.title.as_deref().unwrap_or("(untitled)"),
-            r.cwd.as_deref().unwrap_or("")
+            reference.title.as_deref().unwrap_or("(untitled)"),
+            reference.cwd.as_deref().unwrap_or(""),
+            if reference.migrated {
+                "  [imported into Codex]"
+            } else {
+                ""
+            }
         );
     }
-    Ok(())
 }
 
-fn resolve(refs: &[SessionRef], query: &str) -> anyhow::Result<SessionRef> {
-    let q = query.trim().to_lowercase();
-    let by_id: Vec<&SessionRef> = refs
-        .iter()
-        .filter(|r| r.id.to_lowercase().starts_with(&q) || r.id == q)
-        .collect();
-    let hits = if by_id.len() == 1 {
-        by_id
-    } else {
-        let by_title: Vec<&SessionRef> = refs
-            .iter()
-            .filter(|r| {
-                r.title
-                    .as_deref()
-                    .map(|t| t.to_lowercase().contains(&q))
-                    .unwrap_or(false)
-            })
-            .collect();
-        if by_id.len() > 1 {
-            by_id
-        } else {
-            by_title
-        }
-    };
-    match hits.len() {
-        0 => anyhow::bail!("no session matches {query:?}"),
-        1 => Ok(hits[0].clone()),
-        n => {
-            eprintln!("multiple matches for {query:?} ({n}):");
-            for h in &hits {
-                eprintln!("  {}  {}", h.id, h.title.as_deref().unwrap_or("(untitled)"));
-            }
-            anyhow::bail!("be more specific (use a longer id prefix or a more unique title)")
-        }
+fn start_tui(homes: providers::Homes, provider: Option<String>) -> anyhow::Result<()> {
+    #[cfg(feature = "tui")]
+    {
+        crate::tui::run(homes, provider)
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = (homes, provider);
+        anyhow::bail!(
+            "terminal interface is not included in this build; install with --features tui"
+        )
     }
 }
 
@@ -209,23 +203,116 @@ pub fn run() -> anyhow::Result<()> {
         zcode_db: cli.zcode_db.as_ref().map(PathBuf::from),
         agy: cli.agy_dir.as_ref().map(PathBuf::from),
         export: cli.export.as_ref().map(PathBuf::from),
+        qoder: cli.qoder_home.as_ref().map(PathBuf::from),
+        qoder_ide_db: cli.qoder_ide_db.as_ref().map(PathBuf::from),
     };
-    match cli.command {
-        Command::List { provider } => match provider {
-            Some(p) => list_provider(&p, &homes),
-            None if homes.export.is_some() => {
-                let export = providers::web::Export::open(homes.export.as_deref().unwrap())?;
-                list_provider(providers::web::Format::detect(&export)?.name(), &homes)
+    let Some(command) = cli.command else {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && !cli.json {
+            return start_tui(homes, None);
+        }
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    };
+    match command {
+        Command::Tui { provider } => start_tui(homes, provider),
+        Command::Ui { port, open } => {
+            #[cfg(feature = "web-ui")]
+            {
+                crate::web_ui::serve(homes, port, open)
             }
-            None => {
-                for p in ["dsh", "codex", "claude", "zcode", "agy"] {
-                    if let Err(e) = list_provider(p, &homes) {
-                        println!("== {p}: unavailable ({e})");
+            #[cfg(not(feature = "web-ui"))]
+            {
+                let _ = (port, open);
+                anyhow::bail!("browser interface is optional; build with cargo install --locked --path . --features web-ui")
+            }
+        }
+        Command::Providers => {
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(providers::CATALOG)?);
+            } else {
+                for info in providers::CATALOG {
+                    println!(
+                        "{:<12} {:<20} {}\n  {}",
+                        info.name,
+                        info.label,
+                        if info.writable {
+                            "read + write"
+                        } else {
+                            "read only"
+                        },
+                        info.note
+                    );
+                }
+            }
+            Ok(())
+        }
+        Command::Doctor => {
+            let catalog = crate::app::discover(&homes);
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&catalog.providers)?);
+            } else {
+                for status in catalog.providers {
+                    println!(
+                        "{}: {}",
+                        status.info.label,
+                        status
+                            .problem
+                            .unwrap_or_else(|| format!("{} sessions found", status.sessions))
+                    );
+                    println!("  {}", status.info.note);
+                }
+            }
+            Ok(())
+        }
+        Command::List {
+            provider,
+            query,
+            limit,
+        } => {
+            let provider = match provider {
+                None if homes.export.is_some() => {
+                    let export = providers::web::Export::open(homes.export.as_deref().unwrap())?;
+                    Some(providers::web::Format::detect(&export)?.name().to_owned())
+                }
+                other => other,
+            };
+            let mut catalog = if let Some(name) = provider {
+                let sessions = crate::app::discover_provider(&name, &homes)?;
+                crate::app::Catalog {
+                    providers: vec![crate::app::ProviderStatus {
+                        info: *providers::info(&name)?,
+                        sessions: sessions.len(),
+                        problem: None,
+                    }],
+                    sessions,
+                }
+            } else {
+                crate::app::discover(&homes)
+            };
+            if let Some(query) = query {
+                catalog
+                    .sessions
+                    .retain(|reference| crate::app::matches(reference, &query));
+            }
+            if let Some(limit) = limit {
+                catalog.sessions.truncate(limit);
+            }
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&catalog)?);
+            } else {
+                print_sessions(&catalog.sessions);
+                for status in catalog.providers {
+                    if let Some(problem) = status.problem {
+                        eprintln!("{}: {problem}", status.info.name);
                     }
                 }
-                Ok(())
+                if catalog.sessions.is_empty() {
+                    println!("No matching sessions. Run harness-bridge doctor to check source locations.");
+                }
             }
-        },
+            Ok(())
+        }
         Command::Export {
             query,
             from,
@@ -234,7 +321,7 @@ pub fn run() -> anyhow::Result<()> {
             dry_run,
         } => {
             let source = providers::provider_named(&from, &homes)?;
-            let root = resolve(&source.discover()?, &query)?;
+            let root = crate::app::resolve(&source.discover()?, &query)?;
             let bundle =
                 crate::portable::Bundle::collect(source.as_ref(), root, include_subagents)?;
             println!(
@@ -283,6 +370,8 @@ pub fn run() -> anyhow::Result<()> {
             include_subagents,
             rebuild_resume_context,
         } => {
+            let from = providers::info(&from)?.name.to_owned();
+            let to = providers::info(&to)?.name.to_owned();
             if from == to && from != "dsh" {
                 anyhow::bail!("--from and --to must differ (dsh -> dsh is allowed with --preset)");
             }
@@ -294,7 +383,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             let src = providers::provider_named(&from, &homes)?;
             let refs = src.discover()?;
-            let r = resolve(&refs, &query)?;
+            let r = crate::app::resolve(&refs, &query)?;
 
             if from == "dsh" && to == "dsh" {
                 anyhow::ensure!(!include_subagents && !prune_resume_context && !rebuild_resume_context && resume_max_chars == crate::resume::DEFAULT_MAX_CHARS,
@@ -303,11 +392,13 @@ pub fn run() -> anyhow::Result<()> {
                     .as_any()
                     .downcast_ref::<providers::dsh::DshProvider>()
                     .ok_or_else(|| anyhow::anyhow!("internal: dsh provider downcast failed"))?;
-                println!(
-                    "porting dsh session {} to preset {} ...",
-                    r.id,
-                    preset.as_deref().unwrap_or("?")
-                );
+                if !cli.json {
+                    eprintln!(
+                        "porting dsh session {} to preset {} ...",
+                        r.id,
+                        preset.as_deref().unwrap_or("?")
+                    );
+                }
                 let opts = ir::WriteOpts { cwd, name, dry_run };
                 let outcome = dsh.port_preset(&r, preset.as_deref().unwrap(), &opts)?;
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -325,7 +416,9 @@ pub fn run() -> anyhow::Result<()> {
                 );
             }
             let dst = providers::provider_named(&to, &homes)?;
-            println!("reading {} session {} ...", r.provider, r.id);
+            if !cli.json {
+                eprintln!("reading {} session {} ...", r.provider, r.id);
+            }
             let opts = ir::WriteOpts { cwd, name, dry_run };
             let mut outcome = crate::family::migrate(
                 src.as_ref(),

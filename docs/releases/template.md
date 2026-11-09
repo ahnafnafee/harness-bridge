@@ -1,6 +1,6 @@
 ## harness-bridge __VERSION__
 
-Migrate coding sessions between DeepSeek Harness, Codex Desktop / CLI, Claude Code, ZCode, and agy. Provider-specific compatibility limits are documented in the README.
+Browse, preview and migrate coding sessions between Codex, Claude Code, Qoder CLI, DeepSeek Harness, ZCode and Antigravity. Includes a terminal workbench and a local GPUI Kit browser interface.
 
 ### Downloads
 
@@ -12,23 +12,26 @@ Migrate coding sessions between DeepSeek Harness, Codex Desktop / CLI, Claude Co
 
 ### Install
 
-Extract the archive and put the `harness-bridge` executable on your `PATH`, then run `harness-bridge list`.
+Extract the archive and put the `harness-bridge` executable on your `PATH`. Run `harness-bridge` for the terminal workbench, `harness-bridge ui --open` for the browser, or `harness-bridge list` to use the CLI.
+
+The downloads include both interfaces. Python, Node.js and a frontend compiler are not needed.
 
 To build from source:
 
 ```sh
-cargo install --locked --git https://github.com/ahnafnafee/harness-bridge --tag __VERSION__
+cargo install --locked --git https://github.com/ahnafnafee/harness-bridge --tag __VERSION__ --features web-ui
 ```
 
 ### Verify
 
-SHA-256 checksums are attached in `sha256sums.txt`. Run `sha256sum -c sha256sums.txt` from the directory containing the downloaded archives.
+SHA-256 checksums are attached in `sha256sums.txt`. Compare the entry for your archive with `Get-FileHash <archive> -Algorithm SHA256` in PowerShell, `sha256sum <archive>` on Linux, or `shasum -a 256 <archive>` on macOS.
 
 ### Compatibility
 
-- Local validation is Windows-first. Linux/macOS paths default to `$HOME` and were not exercised against real harness stores.
-- DSH imports retain visible history while restoring compacted model context for Codex resume.
-- agy writes support text turns and omit tool calls/results. Attachment and media transfer is not implemented.
-- Migration guidance and the development guide are included in the archive.
+- Packaged binaries are checked against isolated fixtures on all three platforms. Real native stores and browser behavior are primarily validated on Windows.
+- Qoder IDE and web chat exports are read-only sources. Qoder CLI imports do not populate the IDE sidebar.
+- Antigravity writes support text turns; tool activity remains in the normalized archive. Portable files reference attachments but do not embed them.
+- Sources stay intact. Reimports can replace later destination turns, so preserve that destination copy before repeating a transfer.
+- Migration guidance, interface controls, third-party licenses and the development guide are included in each archive.
 
 ### Changes

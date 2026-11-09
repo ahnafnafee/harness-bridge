@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build and verify without creating a release
+        required: true
+        default: v0.5.0
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 permissions:
   contents: write
@@ -35,13 +44,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test
+        run: cargo test --locked --all-features --target ${{ matrix.target }}
+
       - name: Build
         run: cargo build --release --locked --features web-ui --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
         env:
-          VERSION: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
@@ -68,17 +83,26 @@ jobs:
             shasum -a 256 "$asset" > "checksums-$TARGET.txt"
           fi
 
+      - name: Verify packaged executable and local interface
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: python scripts/verify_release.py "harness-bridge-${VERSION}-${TARGET}.${ARCHIVE}" --version "${VERSION#v}" --checksums "checksums-$TARGET.txt" --smoke
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
           path: |
-            harness-bridge-*
+            harness-bridge-*.zip
+            harness-bridge-*.tar.gz
             checksums-*.txt
           if-no-files-found: error
 
   release:
-    name: publish release
+    name: prepare release draft
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -92,11 +116,10 @@ jobs:
 
       - name: Merge checksums and write release notes
         shell: bash
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           cat dist/checksums-*.txt | sort -k2 > sha256sums.txt
+          (cd dist && sha256sum -c ../sha256sums.txt)
           rm dist/checksums-*.txt
           release_template=$(cat docs/releases/template.md)
           printf '%s\n\n' "${release_template//__VERSION__/$VERSION}" > NOTES.md
@@ -105,11 +128,15 @@ jobs:
             echo >> NOTES.md
           fi
 
-      - name: Publish GitHub release
+      - name: Prepare GitHub release draft
         uses: softprops/action-gh-release@v2
         with:
           body_path: NOTES.md
+          draft: true
+          make_latest: 'false'
+          fail_on_unmatched_files: true
           generate_release_notes: true
           files: |
-            dist/harness-bridge-*
+            dist/harness-bridge-*.zip
+            dist/harness-bridge-*.tar.gz
             sha256sums.txt

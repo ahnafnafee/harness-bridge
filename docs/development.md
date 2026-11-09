@@ -120,6 +120,20 @@ python scripts/verify_portable_transfer.py --bridge "target\debug\harness-bridge
 
 The script checks nested saved children, archive preservation, unavailable-context guards, context budgets, explicit recovery/pruning, dry runs and native Codex tool continuations. `--source-rollout <path>` additionally copies an actual encrypted Codex session read-only into an isolated source home, then exports, imports and probes that copy. No remote models are called, and agy is outside this end-to-end matrix.
 
+## Release packaging
+
+The release workflow builds Windows x64, Linux x64 and macOS Apple Silicon with both interfaces. Each runner tests the Rust library, then verifies the packaged archive's checksum, contents, executable architecture and version. The extracted executable also runs the workbench API probe against temporary stores; its served icon and fonts must match the packaged files.
+
+Run the workflow manually with a version such as `v0.5.0` to validate all three packages without creating a release. A `v*` tag runs the same checks and prepares a draft containing the archives and `sha256sums.txt`. Download and inspect those assets before publishing the draft. The workflow does not publish a release automatically.
+
+To verify a downloaded archive locally, use Python 3.12 or newer:
+
+```sh
+python scripts/verify_release.py harness-bridge-v0.5.0-x86_64-pc-windows-msvc.zip --version 0.5.0 --checksums sha256sums.txt --smoke
+```
+
+Select the archive for your platform when using `--smoke`. Omit that flag to check another platform's archive without executing it. The binary itself does not require Python.
+
 ## Provider changes
 
 Implement `Provider::discover`, `read`, and `write`, then add construction in `provider_named`. Preserve native timestamps, message roles, and tool pair ids where supported. Document records the target cannot represent instead of claiming universal losslessness.

@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 
-def verify(bridge, qoder=None):
+def verify(bridge, qoder=None, expected_assets=None):
     with tempfile.TemporaryDirectory(prefix="bridge-workbench-") as temporary:
         root = Path(temporary)
         project = root / "project"
@@ -96,7 +96,10 @@ def verify(bridge, qoder=None):
             api("/api/catalog", expected=403, headers={"Host": "other.example"})
             for asset, signature in [("/icon.png", b"\x89PNG"), ("/fonts/ibm-plex-sans.woff2", b"wOF2"), ("/fonts/ibm-plex-mono.woff2", b"wOF2")]:
                 with urllib.request.urlopen(base + asset, timeout=10) as response:
-                    assert response.read().startswith(signature), asset
+                    content = response.read()
+                    assert content.startswith(signature), asset
+                    if expected_assets:
+                        assert content == (expected_assets / asset.lstrip("/")).read_bytes(), asset
                     assert "font-src 'self'" in response.headers["Content-Security-Policy"]
             with urllib.request.urlopen(base + "/", timeout=10) as response:
                 assert b'/boot.js' in response.read()

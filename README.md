@@ -1,349 +1,220 @@
-<div align="center">
+<div align="center"><a name="readme-top"></a>
 
-<img src="assets/icon.png" width="80" height="80" alt="">
+<img src="assets/icon.png" alt="harness-bridge logo: a cobalt bridge with a silver span" width="112" height="112">
 
 <h1>harness-bridge</h1>
 
-<p>Convert coding sessions into another harness's native format, ready to continue.</p>
+**Move AI coding sessions between tools.**<br>
+Native session migration for **Codex, Claude Code, Qoder CLI, DeepSeek Harness, ZCode and Antigravity**.
 
-<p><strong>DeepSeek Harness · Codex · Claude Code · ZCode · agy · Qoder CLI</strong></p>
+[**Quick start**](#quick-start) · [**Supported tools**](#supported-tools) · [**Documentation**](#documentation) · [**Changelog**](docs/releases/v0.5.0.md) · [**Feedback**][issues]
 
-[![Release][release-badge]][releases]
-[![License][license-badge]](LICENSE)
-[![Rust][rust-badge]](https://www.rust-lang.org/)
-
-<p>
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#compatibility">Compatibility</a> ·
-  <a href="docs/development.md">Development</a> ·
-  <a href="https://github.com/ahnafnafee/harness-bridge/issues">Report an issue</a>
-</p>
+[![Build][build-badge]][build] [![Release][release-badge]][releases] [![Rust][rust-badge]](https://www.rust-lang.org/) [![License][license-badge]](LICENSE)<br>
+[![Stars][stars-badge]][stars] [![Issues][issues-badge]][issues]
 
 </div>
 
----
+Search saved conversations, preview a transfer, and continue in another coding tool. harness-bridge is a Rust CLI with a searchable terminal interface and an optional local browser UI built with GPUI Kit. It reads the source without changing it and writes a native session the destination can list and resume.
 
-`harness-bridge` reads a local session, converts its messages and tool activity through a shared model, and writes a session the destination harness can open. The source stays intact, so you can continue either copy independently. It also reads the data exports of ChatGPT, claude.ai and Gemini, so a web chat can be [continued in Claude Code](#continue-a-web-chat) or another harness.
-
-The visible transcript and the context sent to the model are preserved separately. Supported source checkpoints keep superseded history out of the next request, and an import preflight checks retained context size before writing. Saved child sessions can be imported together with translated parent links.
-
-Start with the [terminal workbench](docs/interfaces.md), use regular commands in scripts, or build the optional local browser interface, written in Rust with [GPUI Kit](https://gpui-kit.com/) and compiled to WebAssembly. Qoder IDE transcripts and desktop histories are also available as read-only sources.
+You can also move sessions between computers with portable JSON files, or import **ChatGPT, claude.ai and Gemini data exports** into a local coding harness.
 
 <details>
 <summary><kbd>Table of contents</kbd></summary>
 
-- [Install](#install)
 - [Quick start](#quick-start)
+- [Features](#features)
+- [Local browser UI](#local-browser-ui)
+- [Supported tools](#supported-tools)
+- [Migrate a coding session](#migrate-a-coding-session)
 - [Move a session to another machine](#move-a-session-to-another-machine)
 - [Continue a web chat](#continue-a-web-chat)
-- [Compatibility](#compatibility)
-- [Options](#options)
-- [How conversion works](#how-conversion-works)
-- [Resuming in Codex](#resuming-in-codex)
-- [Child sessions](#child-sessions)
-- [Common questions](#common-questions)
+- [Before you transfer](#before-you-transfer)
+- [Documentation](#documentation)
 - [Development](#development)
 - [License](#license)
 
 </details>
 
-## Install
-
-Download a binary from [Releases][releases], or build from source with a current stable Rust toolchain:
-
-```sh
-git clone https://github.com/ahnafnafee/harness-bridge.git
-cd harness-bridge
-cargo install --locked --path .
-```
-
-Release archives target Windows x64, Linux x64, and macOS Apple Silicon. Local validation is Windows-first. The installed command does not require Python or Node; Python is used only by the optional development probe.
+<a id="install"></a>
 
 ## Quick start
 
-Open the terminal workbench:
+Download **v0.5.0** for your platform, extract the archive, and put the executable on your `PATH`:
+
+| Platform | Download |
+| :-- | :-- |
+| Windows x64 | [ZIP](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-x86_64-pc-windows-msvc.zip) |
+| Linux x64 | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-aarch64-apple-darwin.tar.gz) |
+
+Both interfaces are included. [SHA-256 checksums](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/sha256sums.txt) are available with the [release notes][release].
+
+<details>
+<summary>Build from source with stable Rust</summary>
+
+```sh
+cargo install --locked --git https://github.com/ahnafnafee/harness-bridge --tag v0.5.0 --features web-ui
+```
+
+For a smaller terminal-only build, omit `--features web-ui`.
+
+</details>
+
+Then open the terminal interface:
 
 ```sh
 harness-bridge
 ```
 
-Search for a conversation, press Enter to choose its destination, then review the preview. Press **w** on the review screen to write it. Without an interactive terminal, the bare command prints help instead. See the [interface guide](docs/interfaces.md) for keyboard controls, browser installation and source locations.
+Search for a session, press **Enter** to configure and preview a transfer, then press **w** to confirm the write. Prefer a graphical interface? Run `harness-bridge ui --open`.
 
-List sessions, select an id prefix or title, and preview the conversion:
+The bundled interfaces do not require Python, Node.js or a separate frontend build.
 
-```sh
-harness-bridge list --provider dsh
-harness-bridge migrate "<id-prefix>" --from dsh --to codex --dry-run
-```
+## Features
 
-Then write the native session:
+| Feature | What it does |
+| :-- | :-- |
+| **Native session migration** | Convert messages, tool activity and saved summaries into the destination harness's session format. |
+| **Searchable session library** | Browse by source, project folder, title or id in the terminal or local browser. |
+| **Preview before writing** | Review a captured source snapshot and destination details, then confirm the transfer separately. |
+| **Portable session files** | Carry the normalized archive, retained context and saved child links to another computer. |
+| **Web chat imports** | Read official ChatGPT, claude.ai and Gemini exports as sources for local sessions. |
 
-```sh
-harness-bridge migrate "<id-prefix>" --from dsh --to codex
-```
+The archive and retained model context are handled separately, so supported compaction checkpoints do not replay all earlier history. [Conversion limits](#before-you-transfer) explain what cannot carry over.
 
-The result reports the destination path, native session id, and conversion counts. DSH and Codex are the default source and target, so `harness-bridge migrate "<id-prefix>"` is equivalent.
-
-Set the new chat's directory and title when needed. For example, in PowerShell:
-
-```powershell
-harness-bridge migrate "API migration" --cwd "F:\Projects\my-app" --name "API migration"
-```
-
-Other supported directions use the same command:
+## Local browser UI
 
 ```sh
-harness-bridge migrate "<id-prefix>" --from codex --to claude
-harness-bridge migrate "<id-prefix>" --from claude --to dsh
-harness-bridge migrate "<id-prefix>" --from zcode --to codex
-harness-bridge migrate "<id-prefix>" --from agy --to codex
+harness-bridge ui --open
 ```
 
-If a query matches several sessions, the command lists their ids and stops. Use a longer id prefix to select the intended session.
+The GPUI Kit interface provides source and project filters, conversation excerpts, transfer previews, portable-file operations and per-tab history. It runs on `127.0.0.1`; its fonts, icons and WebAssembly module are bundled locally. Keep the process running while using the browser.
+
+See the [interface guide](docs/interfaces.md) for keyboard controls, source locations and browser requirements. Windows Chrome is the validated browser; screen-reader integration and real phone keyboard/IME behavior still need validation.
+
+<a id="compatibility"></a>
+
+## Supported tools
+
+| Tool | Provider id | Support |
+| :-- | :-- | :-- |
+| Codex CLI / Desktop | `codex` | Read and write |
+| Claude Code | `claude` | Read and write |
+| Qoder CLI | `qoder` | Read and write |
+| DeepSeek Harness | `dsh` | Read and write |
+| ZCode | `zcode` | Read and write |
+| Antigravity | `agy` | Read; write text turns |
+| Qoder IDE | `qoder-ide` | Read only |
+| ChatGPT export | `chatgpt` | Read only |
+| claude.ai export | `claude-web` | Read only |
+| Gemini export | `gemini-web` | Read only |
+
+Codex writes require an existing top-level Desktop session as a template. ZCode needs its initialized database, and Antigravity needs a template conversation. Antigravity tool activity remains in the migration archive rather than its native text turns. Qoder CLI imports do not register sessions in the Qoder IDE sidebar. See [provider details](docs/interfaces.md#qoder) and the [migration guide](docs/migration-guide.md).
+
+## Migrate a coding session
+
+Find the source session and preview the conversion:
+
+```sh
+harness-bridge list --provider codex
+harness-bridge migrate "<session-id>" --from codex --to claude --dry-run
+```
+
+When the preview is correct, write it:
+
+```sh
+harness-bridge migrate "<session-id>" --from codex --to claude
+```
+
+The result includes the destination's native session id and saved location. Use an id prefix or title instead of the full id when it identifies one session; ambiguous queries stop and show the matches.
+
+Add `--cwd "/path/to/project"` to set the new session's working directory, `--name "Session title"` to rename it, or `--include-subagents` to copy saved child conversations. Paths recorded inside the history are preserved. [All migration options →](docs/migration-guide.md#options)
 
 ## Move a session to another machine
 
-On the source PC, export a versioned portable JSON file. Add `--include-subagents` to carry saved child sessions and their links:
+On the source computer, export a portable file:
 
 ```sh
-harness-bridge export "API migration" --from zcode --output session.hbridge.json --include-subagents
+harness-bridge export "<session-id>" --from claude --output session.hbridge.json --include-subagents
 ```
 
-Copy that file to the other PC and install harness-bridge 0.3.0 or later there. You can build the current version directly from this repository:
+Copy the file to the receiving computer, install the current version there, and import it into an initialized destination:
 
 ```sh
-cargo install --locked --git https://github.com/ahnafnafee/harness-bridge
+harness-bridge import session.hbridge.json --to codex --cwd "/path/to/project" --dry-run
+harness-bridge import session.hbridge.json --to codex --cwd "/path/to/project"
 ```
 
-Choose the destination harness and its project directory, then preview and import:
-
-```powershell
-harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --dry-run
-harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app"
-```
-
-Both commands support all six writable harnesses. Import reads the transfer file without needing the source harness's home or database. Every included child is imported automatically, with destination ids and parent links recomputed on the receiving PC. The transcript, original timestamps, tool pairs, and retained resume context travel together. Context budgeting, opt-in pruning, and portable reasoning replay apply during import.
-
-If import reports an oversized retained context, add `--prune-resume-context` to the preview/import commands to shorten reasoning and tool outputs while keeping the archive, or compact the source and export again.
-
-Codex sessions with encrypted compaction can be exported with version 0.3.1 or later. The file preserves readable history and marks the complete resume context as unavailable. Import requires explicit recovery:
-
-```sh
-harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --rebuild-resume-context --prune-resume-context --dry-run
-harness-bridge import session.hbridge.json --to codex --cwd "D:\Projects\my-app" --rebuild-resume-context --prune-resume-context
-```
-
-Recovery uses readable items from the latest saved checkpoint and later turns when available, otherwise the readable transcript. It adds a recovery notice, preserves the full normalized archive, and still enforces the context budget. It cannot recover encrypted state or guarantee that decisions held only there survive. These exports use format version 2, which requires 0.3.1 or later on the receiving PC; ordinary exports remain compatible with format version 1.
-
-Version 0.3.2 also supports native Codex `agent_message` input records. Readable agent mail is preserved as labeled input with its author and recipient, including checkpoint history and later turns. Encrypted agent payloads are marked unavailable and follow the same explicit recovery path, even without compaction. Upgrade the source PC to 0.3.2 when exporting these sessions. Ordinary assistant UI events with a similar name are separate records and are not duplicated.
-
-Export refuses to overwrite an existing file; `export --dry-run` reports its counts without creating it. Import validates the format version, payload checksum, and family graph before converting. The receiving harness must already be initialized: Codex needs a local top-level Desktop session as a template, ZCode needs its database, and agy needs a template conversation. Existing provider constraints still apply.
-
-The file carries conversation data, including recorded paths and text, rather than project files, attachments, credentials from harness settings, or executable hidden model state. Move the project separately. `--cwd` changes the new base directory while paths inside the history remain as recorded. Reimporting uses deterministic destination ids and can overwrite later destination turns, as with `migrate`.
-
-See the [portable format specification](docs/portable-format.md) for version 1's layout and validation rules.
+The receiver reads the portable file without needing the source harness's installation. Every bundled child imports automatically. Project files and attachments must be moved separately. See the [portable format guide](docs/portable-format.md) for checksums, receiver versions and context recovery.
 
 ## Continue a web chat
 
-ChatGPT, claude.ai and Gemini have no import, but each offers a data export. harness-bridge reads that export as a read-only source, so a web chat becomes a native session you can continue in Claude Code or another harness. Chats only move out of the web apps; claude.ai web and the mobile apps cannot receive them.
-
-| App | Request the export | Provider |
-| :-- | :-- | :-- |
-| ChatGPT | Settings > Data controls > Export data | `chatgpt` |
-| claude.ai | Settings > Privacy > Export data | `claude-web` |
-| Gemini | Google Takeout > My Activity > Gemini Apps, with Activity records set to JSON under Multiple formats | `gemini-web` |
-
-Each app emails a download link. harness-bridge reads the zip as it is, an extracted folder, or the conversations file; extract a `.tgz` first. For Gemini, the top-level "Gemini" Takeout item holds only Gems, and HTML activity cannot be read.
-
-List the chats in an export. The app is detected from its contents:
+Download a ChatGPT, claude.ai or Gemini data export, then list its chats:
 
 ```sh
-harness-bridge list --export chatgpt-export.zip
+harness-bridge list --export chatgpt.zip
 ```
 
-Preview, then write one chat. `--cwd` is required because web chats have no working directory, and the files a chat refers to are copied there:
-
-```powershell
-harness-bridge migrate "Fridge energy math" --from chatgpt --to claude --export chatgpt-export.zip --cwd "D:\chats\fridge" --dry-run
-harness-bridge migrate "Fridge energy math" --from chatgpt --to claude --export chatgpt-export.zip --cwd "D:\chats\fridge"
-```
-
-Resume it from that folder with `claude --resume <native id>`, or open it from the Claude Desktop Code tab, where the chat is registered.
-
-What carries over:
-
-- The visible branch of each chat. ChatGPT and claude.ai keep every edit and regeneration; the branch you last saw is the one migrated.
-- Code runs, web results, image generation and other tool use, as tool calls with their output. A call with no recorded output gets an explicit empty result, and output with no call stays as text.
-- Reasoning summaries, as reasoning. Hidden model state is not in the exports.
-- Text that claude.ai extracted from uploaded documents, inline in the prompt.
-- Uploaded files and generated images that the export contains, copied to `<cwd>/<provider>-attachments/<chat id>/` and referenced by that path so the destination can open them. Files the export left out are named as missing.
-
-Gemini's Takeout is an activity log of single prompts and answers. Records are grouped into chats by the chat id in their link, and records without one are grouped while less than 30 minutes apart.
-
-Web chats can also be written to a portable file and imported on another machine running 0.4.0 or later. The file keeps the attachment references but not the files.
-
-## Compatibility
-
-| Provider | Read | Write | Native format and constraints |
-| :-- | :--: | :--: | :-- |
-| **dsh** | Yes | Yes | Version 4 JSONL, including multi-frame zstd input. Converted sessions use plain JSONL. |
-| **Codex** | Yes | Yes | Rollout JSONL, desktop sidebar registration, and an import ledger. Writes require an existing top-level Desktop session as a template. |
-| **Claude Code** | Yes | Yes | Project JSONL with compact boundaries, tool-use, and tool-result blocks. Active foreign reasoning becomes plain text; harness instructions are omitted because there is no developer channel. |
-| **ZCode** | Yes | Yes | SQLite session, message, and part tables. Writes use the destination database. |
-| **Qoder CLI** (`qoder`) | Yes | Yes | Project JSONL with committed branch selection, resume checkpoints and a normalized archive sidecar. [Limits and native verification](docs/interfaces.md#qoder). |
-| **Qoder IDE** (`qoder-ide`) | Yes | No | Hook transcripts and read-only desktop history, using a matching CLI transcript for context when present. Visible history alone requires explicit recovery. |
-| **agy** | Yes | Yes, text turns | Brain transcripts with a protobuf fallback reader. Writes rebuild a template conversation's native steps and indexes; unsupported tool activity is retained in a separate migration archive. |
-| **ChatGPT** (`chatgpt`) | Yes | No | Data export `conversations.json`, with shards when present; the visible branch of each chat. |
-| **claude.ai** (`claude-web`) | Yes | No | Data export `conversations.json`; the visible branch of each chat, or list order in older flat exports. |
-| **Gemini** (`gemini-web`) | Yes | No | Takeout `My Activity/Gemini Apps/MyActivity.json` in JSON, grouped into chats. |
-
-Messages, reasoning, tool pairs, timestamps, and stored summaries pass through the shared session model where the target can represent them. Provider-specific telemetry and unsupported records are not guaranteed to survive a round trip. Attachment and media transfer between harnesses is not implemented; web exports copy their own files as described in [Continue a web chat](#continue-a-web-chat).
-
-## Options
-
-| Option | Purpose |
-| :-- | :-- |
-| `--from`, `--to` | Source and destination: `dsh`, `codex`, `claude`, `zcode`, `agy`, or `qoder`; `qoder-ide`, `chatgpt`, `claude-web` and `gemini-web` as sources only. |
-| `--json` | Structured output for commands, including listings and provider diagnostics. |
-| `list --query`, `--limit` | Filter title, id, provider or folder and limit the newest-first results. |
-| `--export` | Web chat export for the web sources: the zip, its extracted folder, or the conversations file. `list --export` detects the app. |
-| `--cwd` | Set the destination's base directory; defaults to the source directory. Required for web sources, whose attachments are copied there. Paths inside messages are left as recorded. |
-| `--name` | Override the destination's display title. |
-| `--dry-run` | Read and convert without writing. Required target templates are still read. |
-| `--resume-max-chars` | Retained-context character budget; defaults to 750,000. This is a preflight limit, not a token count. |
-| `--prune-resume-context` | Explicitly allow shortening reasoning and tool outputs to fit the budget. Preserve the complete normalized archive, prompts, assistant text, tool arguments and call ids. |
-| `--rebuild-resume-context` | Import/migrate only: explicitly reconstruct unavailable context from readable checkpoint items or the transcript. Encrypted state is omitted with a recovery notice; budgets still apply. |
-| `--include-subagents` | Import saved children recursively, preflight the entire family, and remap parent links. |
-| `--preset` | Copy a DSH session to an installed directory preset; valid only with `--from dsh --to dsh`. |
-| `--dsh-home`, `--codex-home`, `--claude-home` | Override a provider's home directory, including for isolated validation. |
-| `--zcode-db`, `--agy-dir` | Override ZCode's database or agy's data directory. |
-| `--qoder-home`, `--qoder-ide-db` | Override Qoder's home and read-only IDE/desktop database. |
-
-Run `harness-bridge --help` or `harness-bridge migrate --help` for the full command reference.
-
-<details>
-<summary><strong>Default storage locations</strong></summary>
-
-Paths are relative to the user's home directory.
-
-| Provider | Location |
-| :-- | :-- |
-| dsh | `~/.dsh/sessions/<project>/<id>/session.v4.jsonl[.zstd]` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
-| Claude Code | `~/.claude/projects/<project>/<id>.jsonl` |
-| ZCode | `~/.zcode/cli/db/db.sqlite` |
-| agy | `~/.gemini/antigravity-cli` |
-| Qoder CLI | `QODER_CONFIG_DIR` or `~/.qoder/projects/<project>/<id>.jsonl` |
-| Qoder IDE | `~/.qoder/projects/<project>/transcript/<id>.jsonl`; desktop database override with `--qoder-ide-db`. |
-
-</details>
-
-## How conversion works
-
-```mermaid
-flowchart LR
-    Source["Source session store"] --> Reader["Provider reader"]
-    Reader --> Session["Normalized session"]
-    Session --> Writer["Provider writer"]
-    Writer --> Target["Target session store"]
-```
-
-Every provider implements discovery, reading, writing, and child discovery. The shared [session model](src/ir.rs) carries the archive and, when available, a separate set of events representing the source's current model context. The destination writer translates those records into native messages and tool items, then performs any registration its app needs. Claude and DSH writes add native context checkpoints; ZCode keeps archival messages visible in the transcript but hidden from the provider. agy writes retained text turns and stores the normalized archive separately in `brain/<id>/migration-archive.json`.
-
-Codex writes also update `session_index.jsonl`, the `threads` table in `state_5.sqlite` when present, and `dsh-imports.json`. This lets the Desktop app find imported chats without relying on its initial rollout backfill.
-
-## Resuming in Codex
-
-Source transcripts can retain records from before compaction. Sending that entire log on resume can exceed the model's context window. Claude's latest compact boundary, summary and declared preserved messages, DSH's ordered surface replacements, Codex's plaintext replacement history, and ZCode's persisted summaries are read as retained context.
-
-The DSH reader replays `surfaceOp` replacements in their actual context order and retains the tool calls paired with surviving results. The Codex writer keeps the full converted transcript for display and adds a native `compacted` record containing the retained context. Migration output reports `resume_context_items` and `resume_context_chars` when this metadata is available.
-
-Imported reasoning remains visible in the Codex transcript, while the resume checkpoint represents it as labeled assistant text. The normalized model cannot transfer the originating service's signed or encrypted hidden state. This applies to every source provider, including uncompacted sessions and normalized Codex reads. Replaying synthesized native reasoning can otherwise cause `unsupported_persisted_item_context` on a later response continuation.
-
-Compacted DSH transcripts without authoritative surface operations and Codex checkpoints without plaintext replacement history fail with an explanation instead of replaying the archive. Uncompacted sources use their full context and the same size preflight.
-
-When retained context exceeds the budget, compact the source or explicitly allow output pruning:
+Choose a chat and an existing project folder:
 
 ```sh
-harness-bridge migrate "<id-prefix>" --from claude --to codex --prune-resume-context --include-subagents --dry-run
+harness-bridge migrate "<chat-id>" --from chatgpt --to claude --export chatgpt.zip --cwd "./chats" --dry-run
 ```
 
-Pruning retains a notice and the beginning/end of shortened tool outputs; it is not a generated summary. If protected messages or arguments still exceed the budget, the import stops before writing. `--resume-max-chars` can be adjusted for a suitable destination model. Counts describe serialized normalized context, not the destination's exact request or token usage; native instructions, tool catalogs and model limits still affect whether a remote request fits.
+Remove `--dry-run` to write the session. Web chat imports require `--cwd`; attachments are copied there only when the export contains them. Web apps are sources only, so harness-bridge cannot import a local session back into ChatGPT, claude.ai or Gemini.
 
-After importing or updating a chat, reopen or refresh Codex Desktop so it reloads the rollout and registry. For a chat already loaded in memory, restart the app before resuming.
+[Export instructions and supported formats →](docs/migration-guide.md#continue-a-web-chat)
 
-`python scripts/verify_codex_resume.py <rollout> --codex <executable>` tests an isolated copy with the real app-server and a local Responses stub. It checks request size and unsigned reasoning across a harmless plan-tool continuation. Custom HTTP providers may send full history instead of `previous_response_id`; the probe reports which mode it observed. This local replay contract makes no remote model calls and does not establish acceptance by the remote service.
+<a id="common-questions"></a>
 
-## Child sessions
+## Before you transfer
 
-`--include-subagents` imports saved child conversations, including nested descendants, and reports their destination ids under `extra.child_sessions`. All members are read and converted in dry-run mode before any actual write. Reimports use deterministic ids. A failure during a later filesystem or registry write can still leave earlier family members written; there is no transaction across separate stores.
+- **The source stays intact.** Migration reads the original session and writes to the destination.
+- **Reimports update the same destination.** Deterministic ids can replace turns added after an earlier transfer. Preserve that destination copy before importing again.
+- **Hidden model state does not transfer.** Some encrypted or unsupported checkpoints require explicit `--rebuild-resume-context`; recovery cannot restore encrypted decisions.
+- **Context budgets count characters, not tokens.** Oversized context fails unless you explicitly allow pruning with `--prune-resume-context`. The full normalized archive remains available.
+- **Tool commands are not translated.** History can move between harnesses, but their tool names, permissions and runtime behavior can differ. Importing saved child sessions does not start agents.
 
-The full child-id map is kept in the parent's preserved transcript, alongside native parent links and the command's output. It does not enlarge the parent's model context or trigger additional pruning.
+For reasoning replay, native storage formats, Codex sidebar behavior and provider limitations, read the [migration guide](docs/migration-guide.md).
 
-| Destination | Parent link |
+## Documentation
+
+| Guide | Covers |
 | :-- | :-- |
-| Codex | Native parent metadata and historical `thread_spawn_edges` when available. |
-| Claude Code | Native `subagents/agent-<id>.jsonl` under the translated parent path. |
-| DSH | Native `parentSession` header. |
-| ZCode | Native `parent_id` when available; migration entry fallback on older schemas. |
-| agy | Portable parent link in the migration archive; native subtrajectory translation is not implemented. |
-
-These are historical sessions. Importing them does not start agents or translate destination tool commands. Child discovery uses persisted native links for Codex, Claude, DSH and ZCode; for agy it can recover only links recorded by previous bridge imports. Whether children appear in an app's UI depends on that app.
-
-## Common questions
-
-<details>
-<summary><strong>Does migration modify the source?</strong></summary>
-
-No. Conversion reads the source and writes to the destination. A DSH preset change also creates a separate session with a deterministic id.
-
-</details>
-
-<details>
-<summary><strong>What happens if I run the same migration again?</strong></summary>
-
-Target ids are deterministic, and the Codex import ledger remembers earlier imports. Repeating a migration updates the same target instead of creating another copy. It can overwrite conversation added in the destination since the previous import; preserve that copy before reimporting.
-
-</details>
-
-<details>
-<summary><strong>Can I test against an isolated store?</strong></summary>
-
-Yes. Use the home overrides and `--dry-run`. For a real isolated Codex write, copy an existing top-level Desktop rollout into the test home's `sessions` directory as a template. For ZCode, use a database copy with `--zcode-db`. See [local validation](docs/development.md#local-validation).
-
-</details>
-
-<details>
-<summary><strong>Why is an imported Codex chat missing from the sidebar?</strong></summary>
-
-Desktop needs both the rollout and its registry entry. This tool registers the chat during a normal write; manually copying a rollout may not be enough. Refresh or reopen the app after migration.
-
-</details>
+| [Interactive interfaces](docs/interfaces.md) | Terminal keys, browser setup, source locations and Qoder compatibility. |
+| [Session migration](docs/migration-guide.md) | CLI options, web exports, compaction, Codex resume and child sessions. |
+| [Portable file format](docs/portable-format.md) | Versioned exports, checksums, receiver requirements and recovery. |
+| [Development](docs/development.md) | Architecture, provider implementations and isolated validation. |
+| [0.5.0 release notes](docs/releases/v0.5.0.md) | Terminal workbench, GPUI Kit browser UI and Qoder support. |
 
 ## Development
 
-Run the local Rust checks:
-
 ```sh
 cargo fmt --all -- --check
-cargo test --locked
+cargo test --locked --all-features
+cargo +stable test --locked --manifest-path ui/Cargo.toml
 ```
 
-The [development guide](docs/development.md) covers module ownership, provider work, and the real Codex app-server resume probe. Contributor guidance for running migrations is in [AGENTS.md](AGENTS.md).
-
-Current gaps include agy tool steps, attachment transfer between harnesses, broader platform validation, and a built-in `verify` command.
+The [development guide](docs/development.md) describes rebuilding the GPUI frontend and testing native resume behavior in throwaway stores. [AGENTS.md](AGENTS.md) documents using harness-bridge from a coding agent. Report reproducible problems or propose changes through [GitHub issues][issues].
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Bundled fonts and graphical components retain their [third-party licenses](assets/licenses/README.md).
 
 <div align="right">
 
-[Back to top](#harness-bridge)
+[Back to top ↑](#readme-top)
 
 </div>
 
-[release-badge]: https://img.shields.io/github/v/release/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=58616c
-[license-badge]: https://img.shields.io/badge/license-MIT-58616c?style=flat-square&labelColor=30343b
-[rust-badge]: https://img.shields.io/badge/Rust-stable-58616c?style=flat-square&labelColor=30343b
+[build-badge]: https://img.shields.io/github/actions/workflow/status/ahnafnafee/harness-bridge/ci.yml?branch=main&style=flat-square&label=tests&labelColor=30343b&color=193bd1
+[build]: https://github.com/ahnafnafee/harness-bridge/actions/workflows/ci.yml
+[release-badge]: https://img.shields.io/github/v/release/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=193bd1
+[rust-badge]: https://img.shields.io/badge/Rust-stable-193bd1?style=flat-square&labelColor=30343b
+[license-badge]: https://img.shields.io/badge/license-MIT-193bd1?style=flat-square&labelColor=30343b
+[stars-badge]: https://img.shields.io/github/stars/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=637089
+[issues-badge]: https://img.shields.io/github/issues/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=637089
 [releases]: https://github.com/ahnafnafee/harness-bridge/releases
+[release]: https://github.com/ahnafnafee/harness-bridge/releases/tag/v0.5.0
+[stars]: https://github.com/ahnafnafee/harness-bridge/stargazers
+[issues]: https://github.com/ahnafnafee/harness-bridge/issues

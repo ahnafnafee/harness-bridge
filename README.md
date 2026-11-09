@@ -7,7 +7,7 @@
 **Move AI coding sessions between tools.**<br>
 Native session migration for **Codex, Claude Code, Qoder CLI, DeepSeek Harness, ZCode and Antigravity**.
 
-[**Quick start**](#quick-start) · [**Supported tools**](#supported-tools) · [**Documentation**](#documentation) · [**Changelog**](docs/releases/v0.5.0.md) · [**Feedback**][issues]
+[**Quick start**](#quick-start) · [**Supported tools**](#supported-tools) · [**Documentation**](#documentation) · [**Changelog**](docs/releases/v0.5.1.md) · [**Feedback**][issues]
 
 [![Build][build-badge]][build] [![Release][release-badge]][releases] [![Rust][rust-badge]](https://www.rust-lang.org/) [![License][license-badge]](LICENSE)<br>
 [![Stars][stars-badge]][stars] [![Issues][issues-badge]][issues]
@@ -39,21 +39,21 @@ You can also move sessions between computers with portable JSON files, or import
 
 ## Quick start
 
-Download **v0.5.0** for your platform, extract the archive, and put the executable on your `PATH`:
+Download **v0.5.1** for your platform, extract the archive, and put the executable on your `PATH`:
 
 | Platform | Download |
 | :-- | :-- |
-| Windows x64 | [ZIP](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-x86_64-pc-windows-msvc.zip) |
-| Linux x64 | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz) |
-| macOS Apple Silicon | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/harness-bridge-v0.5.0-aarch64-apple-darwin.tar.gz) |
+| Windows x64 | [ZIP](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.1/harness-bridge-v0.5.1-x86_64-pc-windows-msvc.zip) |
+| Linux x64 | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.1/harness-bridge-v0.5.1-x86_64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [tar.gz](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.1/harness-bridge-v0.5.1-aarch64-apple-darwin.tar.gz) |
 
-Both interfaces are included. [SHA-256 checksums](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.0/sha256sums.txt) are available with the [release notes][release].
+Both interfaces are included. [SHA-256 checksums](https://github.com/ahnafnafee/harness-bridge/releases/download/v0.5.1/sha256sums.txt) are available with the [release notes][release].
 
 <details>
 <summary>Build from source with stable Rust</summary>
 
 ```sh
-cargo install --locked --git https://github.com/ahnafnafee/harness-bridge --tag v0.5.0 --features web-ui
+cargo install --locked --git https://github.com/ahnafnafee/harness-bridge --tag v0.5.1 --features web-ui
 ```
 
 For a smaller terminal-only build, omit `--features web-ui`.
@@ -185,6 +185,7 @@ For reasoning replay, native storage formats, Codex sidebar behavior and provide
 | [Session migration](docs/migration-guide.md) | CLI options, web exports, compaction, Codex resume and child sessions. |
 | [Portable file format](docs/portable-format.md) | Versioned exports, checksums, receiver requirements and recovery. |
 | [Development](docs/development.md) | Architecture, provider implementations and isolated validation. |
+| [0.5.1 release notes](docs/releases/v0.5.1.md) | ZCode Desktop discovery and resume checkpoint fixes. |
 | [0.5.0 release notes](docs/releases/v0.5.0.md) | Terminal workbench, GPUI Kit browser UI and Qoder support. |
 
 ## Development
@@ -215,6 +216,6 @@ The [development guide](docs/development.md) describes rebuilding the GPUI front
 [stars-badge]: https://img.shields.io/github/stars/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=637089
 [issues-badge]: https://img.shields.io/github/issues/ahnafnafee/harness-bridge?style=flat-square&labelColor=30343b&color=637089
 [releases]: https://github.com/ahnafnafee/harness-bridge/releases
-[release]: https://github.com/ahnafnafee/harness-bridge/releases/tag/v0.5.0
+[release]: https://github.com/ahnafnafee/harness-bridge/releases/tag/v0.5.1
 [stars]: https://github.com/ahnafnafee/harness-bridge/stargazers
 [issues]: https://github.com/ahnafnafee/harness-bridge/issues

@@ -124,12 +124,12 @@ The script checks nested saved children, archive preservation, unavailable-conte
 
 The release workflow builds Windows x64, Linux x64 and macOS Apple Silicon with both interfaces. Each runner tests the Rust library, then verifies the packaged archive's checksum, contents, executable architecture and version. The extracted executable also runs the workbench API probe against temporary stores; its served icon and fonts must match the packaged files.
 
-Run the workflow manually with a version such as `v0.5.0` to validate all three packages without creating a release. A `v*` tag runs the same checks and prepares a draft containing the archives and `sha256sums.txt`. Download and inspect those assets before publishing the draft. The workflow does not publish a release automatically.
+Run the workflow manually with a version such as `v0.5.1` to validate all three packages without creating a release. A `v*` tag runs the same checks and prepares a draft containing the archives and `sha256sums.txt`. Download and inspect those assets before publishing the draft. The workflow does not publish a release automatically.
 
 To verify a downloaded archive locally, use Python 3.12 or newer:
 
 ```sh
-python scripts/verify_release.py harness-bridge-v0.5.0-x86_64-pc-windows-msvc.zip --version 0.5.0 --checksums sha256sums.txt --smoke
+python scripts/verify_release.py harness-bridge-v0.5.1-x86_64-pc-windows-msvc.zip --version 0.5.1 --checksums sha256sums.txt --smoke
 ```
 
 Select the archive for your platform when using `--smoke`. Omit that flag to check another platform's archive without executing it. The binary itself does not require Python.
